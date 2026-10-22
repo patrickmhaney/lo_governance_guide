@@ -1,0 +1,4 @@
+{# The dot mark, used in the header and as the favicon. #}
+{% macro mark(size=22) -%}
+<svg class="mark" width="{{ size }}" height="{{ size }}" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="50" fill="currentColor"/><g style="fill:var(--logo-cut)"><circle cx="50" cy="50" r="13"/><circle cx="50" cy="18.5" r="8"/><circle cx="80" cy="40.3" r="8"/><circle cx="68.5" cy="75.5" r="8"/><circle cx="31.5" cy="75.5" r="8"/><circle cx="20" cy="40.3" r="8"/></g></svg>
+{%- endmacro %}

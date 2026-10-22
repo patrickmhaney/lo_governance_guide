@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Workspaces · Governance Guide{% endblock %}
+{% block body_class %}app-page{% endblock %}
+{% block main %}
+<main class="wrap admin">
+  <div class="admin-h">
+    <h1 class="display-sm">Workspaces</h1>
+    <button class="btn primary" id="new-workspace">New workspace</button>
+  </div>
+
+  <div class="card tbl-wrap">
+    <table class="clients">
+      <thead><tr><th>Workspace</th><th class="num">Dashboards</th><th class="num">Measures defined</th><th class="num">Complete</th><th class="num">Follow-ups</th><th class="num">Don't know</th><th>Progress</th><th>Exports</th></tr></thead>
+      <tbody>
+      {% for c in clients %}
+      {% set p = c.progress %}
+      <tr>
+        <td><a href="/w/{{ c.slug }}"><b>{{ c.name }}</b></a></td>
+        <td class="num">{{ c.dashboards }}</td>
+        <td class="num">{{ p.defined }} <span class="muted">/ {{ p.cells }}</span></td>
+        <td class="num">{{ p.complete }}</td>
+        <td class="num">{{ p.followup or "–" }}</td>
+        <td class="num">{{ p.unknown or "–" }}</td>
+        <td><span class="mini-bar"><span class="b-ok" style="width:{{ (p.complete / p.defined * 100) if p.defined else 0 }}%"></span><span class="b-warn" style="width:{{ (p.in_progress / p.defined * 100) if p.defined else 0 }}%"></span></span></td>
+        <td class="nowrap"><a href="/w/{{ c.slug }}/export.md" target="_blank" rel="noopener">Markdown</a> · <a href="/w/{{ c.slug }}/export.csv">CSV</a></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+</main>
+{% endblock %}
+{% block scripts %}
+<script>
+document.getElementById("new-workspace").addEventListener("click", async () => {
+  const name = (prompt("Name the new workspace") || "").trim();
+  if (!name) return;
+  const res = await fetch("/api/clients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  if (!res.ok) { alert("Couldn't create the workspace. Try a shorter name."); return; }
+  location.href = "/w/" + (await res.json()).slug;
+});
+</script>
+{% endblock %}
