@@ -1,0 +1,38 @@
+{% extends "_workspace.html" %}
+{% block page %}
+<section class="guide" data-guide="ownership">
+  <p><b>Every process, dimension and measure needs an owner:</b> the person or department that answers for its definition and gets problems fixed at the source. Owners are set on each item. This page shows the gaps and how the work is shared.</p>
+</section>
+<div class="toolbar">
+  <span class="spacer"></span>
+  <button class="btn ghost" data-guide-show="ownership" hidden>What owners do</button>
+</div>
+
+<div class="own-grid">
+  <section class="own-section" aria-labelledby="gaps-h">
+    <h2 id="gaps-h">Not owned yet</h2>
+    <div id="gaps"></div>
+  </section>
+
+  <section class="own-section" aria-labelledby="by-dept-h">
+    <h2 id="by-dept-h">By department</h2>
+    <div class="card tbl-wrap"><table class="own-table"><thead><tr><th>Department</th><th>Processes owned</th><th>Steps done</th><th>Dimensions owned</th><th>Measures owned</th></tr></thead><tbody id="by-dept"></tbody></table></div>
+  </section>
+
+  <section class="own-section" aria-labelledby="matrix-h">
+    <h2 id="matrix-h">Processes and the departments in them</h2>
+    <p class="muted small">Who owns each process, and who does its steps. Many departments in one process means many handoffs.</p>
+    <div class="card tbl-wrap"><table class="own-matrix" id="matrix"></table></div>
+  </section>
+
+  <section class="own-section" aria-labelledby="depts-h">
+    <h2 id="depts-h">Departments</h2>
+    <div class="card tbl-wrap"><table><thead><tr><th>Name</th><th class="num">People</th><th></th></tr></thead><tbody id="depts"></tbody></table></div>
+    <form id="dept-form" class="form-row dept-form">
+      <input class="input" name="name" placeholder="Department name" aria-label="Department name" required>
+      <button class="btn primary" type="submit">Add department</button>
+    </form>
+  </section>
+</div>
+{% endblock %}
+{% block page_scripts %}<script src="{{ asset('planning.js') }}"></script><script src="{{ asset('ownership.js') }}"></script>{% endblock %}

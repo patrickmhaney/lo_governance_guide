@@ -30,7 +30,7 @@ def first_req(client, slug):
 def test_pages_render(client):
     slug = new_workspace(client)
     index = client.get("/").text
-    assert "Governance Guide" in index and "Acme" in index
+    assert "Requirements to Governance" in index and "Acme" in index
     moved = client.get("/admin", follow_redirects=False)
     assert moved.status_code == 301 and moved.headers["location"] == "/"
     page = client.get(f"/w/{slug}")

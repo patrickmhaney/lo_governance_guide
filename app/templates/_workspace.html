@@ -1,0 +1,69 @@
+{# Every workspace page: the client name, the tabs, "You are", People and
+   Archive, and the drawer, dialogs and toast the pages share. #}
+{% extends "base.html" %}
+{% block title %}{{ client.name }} · {{ tab_label }} · Requirements to Governance{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ asset('styles.css') }}"><link rel="stylesheet" href="{{ asset('planning.css') }}">{% endblock %}
+{% block body_class %}app-page{% endblock %}
+{% block body_attrs %}data-slug="{{ client.slug }}" data-tab="{{ tab }}"{% endblock %}
+{% block nav %}
+<a href="/">All workspaces</a>
+{% endblock %}
+{% block main %}
+<div class="app">
+  {% if client.is_demo %}
+  <div class="demo-note">This is a sample workspace for a fictional company. Changes you make here are visible to other visitors.</div>
+  {% endif %}
+  <header class="top">
+    <div>
+      <h1>{{ client.name }}</h1>
+    </div>
+    {% block top %}{% endblock %}
+  </header>
+
+  <nav class="tabs" aria-label="Workspace">
+    <div class="tab-list">
+      {% for key, label, path, _ in TABS %}
+      <a href="/w/{{ client.slug }}{{ path }}"{% if key == tab %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </div>
+    <div class="tab-tools">
+      <label class="me">You are
+        <select id="me" class="select"></select>
+      </label>
+      <button class="btn ghost" id="btn-people">People</button>
+      <button class="btn ghost" id="btn-archive">Archive</button>
+    </div>
+  </nav>
+
+  {% block page %}{% endblock %}
+</div>
+
+<aside class="drawer" id="drawer" aria-hidden="true" aria-labelledby="d-title">
+  <div class="drawer-inner" id="drawer-inner"></div>
+</aside>
+<div class="scrim" id="scrim"></div>
+
+<dialog id="dlg-people" class="dlg">
+  <div class="dlg-h"><h2>People</h2><button class="x" data-close aria-label="Close">×</button></div>
+  <p class="muted">Everyone who fills in or signs off on anything in this workspace.</p>
+  <div class="tbl-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Department</th><th class="num">Assigned</th><th class="num">Complete</th><th></th></tr></thead><tbody id="people-rows"></tbody></table></div>
+  <form id="people-form" class="form-row people-form">
+    <input class="input" name="name" placeholder="Full name" aria-label="Full name" required>
+    <input class="input" name="role" placeholder="Role" aria-label="Role">
+    <select class="select" name="department_id" aria-label="Department"></select>
+    <input class="input" name="email" placeholder="Email (optional)" aria-label="Email">
+    <button class="btn primary" type="submit">Add person</button>
+  </form>
+</dialog>
+
+<dialog id="dlg-archive" class="dlg">
+  <div class="dlg-h"><h2>Archive</h2><button class="x" data-close aria-label="Close">×</button></div>
+  <p class="muted">Everything deleted from this workspace, with its answers and history. Restoring puts it back where it was.</p>
+  <div class="tbl-wrap"><table><thead><tr><th>Deleted</th><th>Measures</th><th>When</th><th></th></tr></thead><tbody id="archive-rows"></tbody></table></div>
+</dialog>
+
+{% block dialogs %}{% endblock %}
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+{% endblock %}
+{% block scripts %}<script src="{{ asset('common.js') }}"></script>{% block page_scripts %}{% endblock %}{% endblock %}

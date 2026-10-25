@@ -1,0 +1,16 @@
+{% extends "_workspace.html" %}
+{% block page %}
+<section class="guide" data-guide="processes">
+  <p><b>A business process is work the business does over and over that creates data:</b> taking an order, buying stock, paying people. List the main ones, the steps in each, and who does each step.</p>
+  <p class="muted">The warehouse is organized around these processes. Each one's measures and dimensions hang off it on the bus matrix.</p>
+</section>
+
+<div class="toolbar">
+  <button class="btn primary" id="add-process">+ Add a process</button>
+  <span class="spacer"></span>
+  <button class="btn ghost" data-guide-show="processes" hidden>What's a business process?</button>
+</div>
+
+<div class="proc-list" id="proc-list"></div>
+{% endblock %}
+{% block page_scripts %}<script src="{{ asset('planning.js') }}"></script><script src="{{ asset('processes.js') }}"></script>{% endblock %}

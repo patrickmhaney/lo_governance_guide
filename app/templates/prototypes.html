@@ -1,0 +1,22 @@
+{% extends "_workspace.html" %}
+{% block page %}
+<section class="guide" data-guide="prototypes">
+  <p><b>Sketch each dashboard before it's built:</b> what goes where, and what each tile shows. Sketches use shapes instead of numbers, so the conversation stays on layout and content.</p>
+  <p class="muted">Add tiles from the bar above the board. Drag a tile to move it, and drag its corner to resize. With a tile selected, arrow keys move it and Shift + arrows resize it.</p>
+</section>
+
+<div class="proto-layout">
+  <nav class="proto-nav" aria-label="Dashboards" id="proto-nav"></nav>
+  <section class="proto-main">
+    <div class="proto-head">
+      <h2 id="proto-title"></h2>
+      <span class="spacer"></span>
+      <button class="btn ghost" data-guide-show="prototypes" hidden>How sketching works</button>
+    </div>
+    <div class="proto-add" id="proto-add" role="toolbar" aria-label="Add a tile"></div>
+    <div class="board-wrap"><div class="board" id="board" aria-label="Dashboard sketch"></div></div>
+  </section>
+  <aside class="proto-side" id="proto-side"></aside>
+</div>
+{% endblock %}
+{% block page_scripts %}<script src="{{ asset('planning.js') }}"></script><script src="{{ asset('prototypes.js') }}"></script>{% endblock %}

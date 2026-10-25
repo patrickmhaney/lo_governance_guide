@@ -1,12 +1,15 @@
-# Governance Guide
+# Requirements to Governance
 
-Workspaces where business stakeholders fill out measure requirements.
+Workspaces where business stakeholders plan a data warehouse: their business
+processes and who owns them, the bus matrix, measure requirements, and sketches
+of the dashboards.
 
 - **`/`** lists every workspace with its progress and exports. **New
   workspace** asks for a name and opens a workspace with one dashboard row (D1)
   and four measure slots. (`/admin` redirects here.)
-- **`/w/{slug}`** is one requirements workspace: a grid of dashboards by
-  measure slots. Clicking a cell opens the twelve phase 1 questions.
+- **`/w/{slug}`** is one workspace's measure requirements: a grid of dashboards
+  by measure slots. Clicking a cell opens the twelve phase 1 questions. The
+  other tabs sit beside it (see [Planning tabs](#planning-tabs)).
   **`/w/demo`** is a sample workspace for a fictional distributor.
 
 ## Run it
@@ -26,7 +29,70 @@ in `clients` and restart.
 pytest -q        # each test uses a throwaway database
 ```
 
-## A client workspace
+## Planning tabs
+
+Every workspace has six tabs, in the order the work is done. Measures keep the
+workspace's own link, which clients already have.
+
+| Tab | Path | What it's for |
+|---|---|---|
+| Overview | `/w/{slug}/overview` | The four steps with progress, what needs attention, and the handoff exports |
+| Processes | `/w/{slug}/processes` | Business processes, each with eleven questions and its steps; a swimlane per process, one lane per department |
+| Bus matrix | `/w/{slug}/bus-matrix` | Processes by dimensions. Tick a box to say "analyze this process by this". Dimensions have nine questions of their own. Pick a dashboard to lay it over the matrix |
+| Measures | `/w/{slug}` | The measure grid below, unchanged, plus a business process and dimension chips on each measure |
+| Prototypes | `/w/{slug}/prototypes` | A sketch per dashboard row: tiles on a 12-column board, and who uses the dashboard and for what |
+| Ownership | `/w/{slug}/ownership` | What has no owner, what each department owns and does, and the departments themselves |
+
+Each planning page opens with a two- or three-line guide, which a viewer can
+hide (remembered in their browser) and bring back from the toolbar.
+
+**Processes and dimensions work like measures.** The same drawer, saved as you
+type: "I don't know" with "Who might know?" on every question but the name,
+which flags it for follow-up; assignee; complete only when every question is
+answered; change history; deleting moves it to the archive. A process's steps
+are one of its questions, so removing the last step reopens a completed process.
+
+**How the pieces link.** A measure names the business process that produces it
+and the dimensions it breaks down by (the chips also answer its breakdowns
+question). When a measure breaks down by a dimension its process doesn't tick,
+the bus matrix shows a dashed suggestion and lists it under Checks. A sketch
+tile shows one measure from its own dashboard, optionally by one dimension, and
+the dimensions from that measure's breakdowns are offered first.
+
+**Process and department dashboards.** A measure is defined once, on one
+dashboard row, and other rows can show it: an empty cell's drawer offers
+"Already defined on another dashboard?", and typing a name that's already
+defined elsewhere offers the existing definition. A department dashboard is
+usually a few measures shown from process dashboards plus one or two of its
+own. Picking a dashboard on the bus matrix highlights the processes its
+measures come from and sorts the dimensions into filters for the whole
+dashboard (ticked for every one of those processes) and filters for some
+measures only. The prototype panel and a filter tile's settings say the same.
+The sample's OPS row shows this.
+
+**Sketches show shapes, never numbers**, so a review stays on layout and
+content. Tiles: headline number, trend, comparison, table, filter, note. Drag to
+move, drag the corner to resize; with a tile focused, arrow keys move it and
+Shift + arrows resize it. A tile's shape is seeded by its id, so it doesn't
+change between visits.
+
+**Ownership.** An owner is a department, a person (whose department counts), or
+a typed-in name. People get a department under People. Removing a department
+leaves its people, steps and owned items without one.
+
+### Exports
+
+| Export | Path |
+|---|---|
+| Handbook: processes and steps, bus matrix, dimensions, measures, dashboard sketches, ownership | `/w/{slug}/handbook.md` |
+| Measure catalogue (now with business process, dimensions and the other dashboards that show each measure) | `/w/{slug}/export.md` |
+| Measures CSV (three columns added at the end: `business_process`, `dimensions`, `also_on`) | `/w/{slug}/export.csv` |
+| Bus matrix CSV | `/w/{slug}/bus-matrix.csv` |
+
+The handbook gives each dimension's history answer in business terms with the
+warehouse term beside it, e.g. "As it was at the time: keep history (type 2)".
+
+## A client workspace's measures
 
 | Feature | Where |
 |---|---|
@@ -36,12 +102,15 @@ pytest -q        # each test uses a throwaway database
 | Add a dashboard row | + under the last row |
 | Add a measure column (up to 12) | + after the last column header |
 | Delete a dashboard row or a measure column (it goes to the archive) | × on the row or column header, shown on hover |
-| Restore something deleted, back where it was | Archive |
 | The twelve questions, saved as you type | Cell drawer |
 | Reassign, flag for follow-up with a note, mark complete or reopen | Cell drawer, top panel |
 | Change history per measure | Cell drawer, bottom |
-| Roster with assigned and completed counts | People |
-| Source-system choices for this client | Source systems |
+| Roster with department, and assigned and completed counts across measures, processes and dimensions | People (on every tab) |
+| Restore anything deleted: dashboard rows, measure columns, processes, dimensions | Archive (on every tab) |
+| Link a measure to its business process | Cell drawer, top panel |
+| Show a measure from another dashboard, or remove it from one | Empty cell's drawer; "On n dashboards" in the drawer |
+| Dimensions it breaks down by | Cell drawer, breakdowns question |
+| Source-system choices for this client, also offered on processes, steps and dimensions | Source systems |
 | **Handoff content**: a Markdown measure catalogue, and a CSV | Catalogue (Markdown), Export CSV |
 
 The Markdown catalogue is the deliverable that goes into the client's own
@@ -71,20 +140,39 @@ report and any open question.
   it back in place: a column shifts later columns right again, and a row whose
   code has been reused since comes back under the next free code (D1, D2...).
   A workspace always keeps at least one measure column.
-- Every workspace route is scoped by slug. A requirement, person or dashboard
-  from one client can't be read, edited or assigned through another client's
-  link (see `test_workspaces_are_isolated`).
+- Every workspace route is scoped by slug. A requirement, person, dashboard,
+  process, dimension, step, department or tile from one client can't be read,
+  edited, linked or assigned through another client's link (see
+  `test_workspaces_are_isolated` and `test_items_are_isolated`).
+- A deleted process or dimension is archived with its steps, bus matrix ticks,
+  and the measures and tiles that pointed at it; restoring puts the links back
+  unless they've been pointed elsewhere since. Archiving a dashboard row takes
+  its sketch and "data use" answers with it.
+- Databases from before the planning tabs get the new tables and columns on
+  start, and an existing sample workspace gets the sample planning content once.
+- A cell that shows another dashboard's measure (`ref_id`) holds nothing else:
+  it's edited, completed and counted where the measure is defined. Only an
+  empty cell can show one, a dashboard shows a measure once, and a measure shown
+  elsewhere can't itself become a reference. Deleting the definition empties the
+  cells that showed it; restoring it, or the row that showed it, puts them back.
+  A sketch tile can show a measure that's on its dashboard either way.
 
 ## Layout
 
 ```
 app/
-  main.py            pages, workspace creation, workspace API (all scoped by slug), exports
-  db.py              SQLite schema, client creation, the completeness rule
-  demo.py            the sample workspace
-  templates/         base, index (workspace list), workspace, _brand (dot mark)
-  static/            site.css (shared), styles.css (workspace), app.js, mark.svg
-tests/test_api.py
+  main.py            pages and tabs, workspace creation, the measure API, export routes
+  planning.py        the planning API: processes, dimensions, steps, bus matrix, departments, tiles
+  items.py           processes and dimensions: question sets, the completeness rule, archive
+  scope.py           slug scoping, "You are", people and shared workspace state
+  exports.py         CSVs, the measure catalogue and the handbook
+  db.py              SQLite schema and migrations, measure cells, the measure archive
+  demo.py            the sample workspace, planning content included
+  templates/         base, index, _workspace (tabs and shared dialogs), one per tab
+  static/            site.css (shared), styles.css (grid and drawer), planning.css (tabs and planning pages)
+                     common.js (every tab), app.js (measures), planning.js (planning state and the
+                     process/dimension drawer), overview.js, processes.js, bus.js, prototypes.js, ownership.js
+tests/test_api.py, tests/test_planning.py
 ```
 
 ## Before hosting it

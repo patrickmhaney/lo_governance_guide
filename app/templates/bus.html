@@ -1,0 +1,31 @@
+{% extends "_workspace.html" %}
+{% block page %}
+<section class="guide" data-guide="bus">
+  <p><b>The bus matrix shows what each process can be analyzed by.</b> Business processes run down the side. Dimensions run across the top: the things the business slices numbers by, like customer, product, date or site.</p>
+  <ol class="guide-steps">
+    <li>Tick a box when you want to see that process by that dimension.</li>
+    <li>A dimension ticked for several processes is shared. It's defined once, so every report that uses it agrees.</li>
+    <li>Dashed boxes are suggestions from the breakdowns on your measures. Click one to tick it.</li>
+    <li>Pick a dashboard to see which processes its measures come from, and which filters work across all of it.</li>
+  </ol>
+</section>
+
+<div class="toolbar">
+  <button class="btn" id="add-process">+ Process</button>
+  <button class="btn" id="add-dimension">+ Dimension</button>
+  <label class="view-pick"><span>Dashboard</span><select class="select" id="bus-view"></select></label>
+  <span class="spacer"></span>
+  <button class="btn ghost" data-guide-show="bus" hidden>How the bus matrix works</button>
+  <a class="btn ghost" href="/w/{{ client.slug }}/bus-matrix.csv">Export CSV</a>
+</div>
+
+<div class="bus-layout">
+  <div class="grid-wrap"><div class="bus" id="bus" role="grid" aria-label="Business processes by dimensions"></div></div>
+  <aside class="checks" aria-labelledby="checks-h">
+    <h2 id="checks-h">Checks</h2>
+    <div id="view" hidden></div>
+    <ul id="checks"></ul>
+  </aside>
+</div>
+{% endblock %}
+{% block page_scripts %}<script src="{{ asset('planning.js') }}"></script><script src="{{ asset('bus.js') }}"></script>{% endblock %}

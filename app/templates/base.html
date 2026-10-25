@@ -1,11 +1,9 @@
-{% from "_brand.html" import mark %}
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}Governance Guide{% endblock %}</title>
-<link rel="icon" href="/static/mark.svg" type="image/svg+xml">
+<title>{% block title %}Requirements to Governance{% endblock %}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -15,7 +13,7 @@
 <body class="{% block body_class %}{% endblock %}" {% block body_attrs %}{% endblock %}>
 <header class="site-h">
   <div class="wrap site-h-in">
-    <a class="logo-small" href="/">{{ mark(18) }} Governance Guide</a>
+    <a class="site-name" href="/">Requirements to Governance</a>
     <nav class="site-nav" aria-label="Main">{% block nav %}{% endblock %}</nav>
   </div>
 </header>

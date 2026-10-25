@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 data/*.db
 data/*.db-*
+
+# Saved planning pages, kept local
+Control Tower Requirements Plan*

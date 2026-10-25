@@ -1,10 +1,18 @@
-"""Governance Guide: measure requirement workspaces and their API.
+"""Requirements to Governance: data warehouse requirement workspaces and their API.
 
 Run locally:  uvicorn app.main:app --reload
 
 Pages
-    /              every workspace, and creating new ones
-    /w/{slug}      one requirements workspace (/w/demo is the sample)
+    /                         every workspace, and creating new ones
+    /w/{slug}                 measure requirements (/w/demo is the sample)
+    /w/{slug}/overview        how the pieces fit, and what needs attention
+    /w/{slug}/processes       business processes, their steps and owners
+    /w/{slug}/bus-matrix      processes by dimensions
+    /w/{slug}/prototypes      dashboard sketches
+    /w/{slug}/ownership       departments, and who owns what
+
+The measure API is here; the planning API (processes, dimensions, the bus
+matrix, departments, sketches) is in planning.py.
 
 There is no login yet. Anyone with a workspace link can open it, and the
 workspace list is open. The random suffix on workspace slugs keeps links unguessable, which is
@@ -16,8 +24,6 @@ attribution for the change history, not authentication.
 """
 from __future__ import annotations
 
-import csv
-import io
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,7 +35,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
 
-from . import db
+from . import db, exports, items, planning
+from .scope import (actor_id as _actor, check_department, check_person, client_for as _client,
+                    person_name as _person_name, shared)
 
 ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=ROOT / "templates")
@@ -50,7 +58,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Governance Guide", lifespan=lifespan)
+app = FastAPI(title="Requirements to Governance", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +91,10 @@ class RequirementPatch(BaseModel):
     followup: bool | None = None
     followup_note: str | None = Field(None, max_length=2000)
     notes: str | None = Field(None, max_length=4000)
+    process_id: int | None = None
+    dimension_ids: list[int] | None = Field(None, max_length=50)
+    # Show the measure defined in another cell instead (sent on its own; None stops showing it).
+    ref_id: int | None = None
     # Questions answered "I don't know": {question key: who might know, or ""}.
     unknown: dict[str, str] | None = None
 
@@ -106,11 +118,23 @@ class PersonIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     role: str = Field("", max_length=120)
     email: str = Field("", max_length=200)
+    department_id: int | None = None
+
+
+class PersonPatch(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=120)
+    role: str | None = Field(None, max_length=120)
+    email: str | None = Field(None, max_length=200)
+    department_id: int | None = None
 
 
 class DashboardPatch(BaseModel):
     code: str | None = Field(None, min_length=1, max_length=12)
     name: str | None = Field(None, max_length=120)
+    audience: str | None = Field(None, max_length=1000)
+    decisions: str | None = Field(None, max_length=2000)
+    cadence: str | None = Field(None, max_length=1000)
+    access: str | None = Field(None, max_length=1000)
 
 
 class SourcesIn(BaseModel):
@@ -142,39 +166,13 @@ FIELD_LABELS = {
     "owner_id": "definition owner", "owner_note": "definition owner",
     "sme_id": "subject matter expert", "sme_note": "subject matter expert", "notes": "notes",
     "followup_note": "follow-up note", "unknown": "“I don't know” answers",
+    "dimension_ids": "breakdowns",
 }
 
-REFRESH_LABELS = {"monthly": "Monthly", "weekly": "Weekly", "daily": "Daily",
-                  "intraday": "During the day"}
-
 
 # ---------------------------------------------------------------------------
-# Scoping helpers: every lookup goes through the client
+# Measure helpers
 # ---------------------------------------------------------------------------
-
-def _client(conn, slug: str) -> dict:
-    row = conn.execute("SELECT * FROM clients WHERE slug = ?", (slug,)).fetchone()
-    if not row:
-        raise HTTPException(404, "No such workspace")
-    c = dict(row)
-    c["sources"] = json.loads(c["sources"])
-    c["is_demo"] = bool(c["is_demo"])
-    return c
-
-
-def _actor(conn, client_id: int, actor: str | None) -> int | None:
-    if not actor or not actor.isdigit():
-        return None
-    row = conn.execute("SELECT id FROM people WHERE id = ? AND client_id = ?", (int(actor), client_id)).fetchone()
-    return row["id"] if row else None
-
-
-def _person_name(conn, pid: int | None) -> str:
-    if pid is None:
-        return "nobody"
-    row = conn.execute("SELECT name FROM people WHERE id = ?", (pid,)).fetchone()
-    return row["name"] if row else "a removed person"
-
 
 def _get_requirement(conn, client_id: int, rid: int) -> dict:
     row = conn.execute(
@@ -194,43 +192,71 @@ def _log(conn, rid: int, actor_id: int | None, action: str, detail: str = "") ->
     )
 
 
-def _defined_rows(conn, client_id: int):
-    return conn.execute(
-        """SELECT d.code, d.name AS dashboard, r.*, a.name AS assignee, o.name AS owner, s.name AS sme
-           FROM requirements r
-           JOIN dashboards d ON d.id = r.dashboard_id
-           LEFT JOIN people a ON a.id = r.assignee_id
-           LEFT JOIN people o ON o.id = r.owner_id
-           LEFT JOIN people s ON s.id = r.sme_id
-           WHERE d.client_id = ? AND r.name <> ''
-           ORDER BY d.position, r.slot""",
-        (client_id,),
-    ).fetchall()
-
-
-def _sources_text(r) -> str:
-    sources = json.loads(r["sources"] or "[]")
-    if r["source_other"]:
-        sources.append(r["source_other"])
-    return "; ".join(sources)
-
-
-def _unknown_text(r) -> str:
-    """The questions answered "I don't know", with who might know, for follow-up."""
-    unknown = json.loads(r["unknown"] or "{}")
-    return "; ".join(db.QUESTION_LABELS[k] + (f" (ask {who})" if who else "")
-                     for k, who in sorted(unknown.items(), key=lambda kv: list(db.QUESTION_LABELS).index(kv[0])))
+def _set_ref(conn, client_id: int, cell: dict, target: int | None, actor_id: int | None) -> dict:
+    """Make an empty cell show a measure from another dashboard, or stop showing it.
+    The history is kept on the measure itself, where people look for it."""
+    rid, old = cell["id"], cell["ref_id"]
+    code = conn.execute("SELECT code FROM dashboards WHERE id = ?", (cell["dashboard_id"],)).fetchone()[0]
+    if target is not None:
+        if old is None and (any(cell["answered"].values()) or cell["notes"].strip()):
+            raise HTTPException(422, "Only an empty cell can show a measure from another dashboard")
+        if conn.execute("SELECT 1 FROM requirements WHERE ref_id = ?", (rid,)).fetchone():
+            raise HTTPException(422, "Other dashboards show the measure in this cell")
+        problem = db.ref_problem(conn, client_id, cell["dashboard_id"], target, rid)
+        if problem:
+            raise HTTPException(422, problem)
+    if old is not None:
+        # Sketch tiles here that showed it no longer can.
+        conn.execute("UPDATE tiles SET requirement_id = NULL WHERE dashboard_id = ? AND requirement_id = ?",
+                     (cell["dashboard_id"], old))
+        _log(conn, old, actor_id, "shared", f"Removed from {code}")
+    conn.execute(
+        """UPDATE requirements SET ref_id = ?, assignee_id = NULL, followup = 0, followup_note = '', process_id = NULL,
+                  dimension_ids = '[]', status = 'not_started', completed_at = NULL, updated_at = ?, updated_by = ?
+           WHERE id = ?""", (target, db.now(), actor_id, rid))
+    if target is not None:
+        _log(conn, target, actor_id, "shared", f"Added to {code}")
+    return _get_requirement(conn, client_id, rid)
 
 
 # ---------------------------------------------------------------------------
 # Pages
 # ---------------------------------------------------------------------------
 
-@app.get("/w/{slug}", response_class=HTMLResponse)
-def workspace(request: Request, slug: str):
+# (tab key, label, path under /w/{slug}, template), in the order the work is done.
+# Measures stay at the workspace's own link, which clients already have.
+TABS = [
+    ("overview", "Overview", "/overview", "overview.html"),
+    ("processes", "Processes", "/processes", "processes.html"),
+    ("bus", "Bus matrix", "/bus-matrix", "bus.html"),
+    ("measures", "Measures", "", "workspace.html"),
+    ("prototypes", "Prototypes", "/prototypes", "prototypes.html"),
+    ("ownership", "Ownership", "/ownership", "ownership.html"),
+]
+templates.env.globals["TABS"] = TABS
+
+
+def _page(request: Request, slug: str, tab: str):
     with db.transaction() as conn:
         client = _client(conn, slug)
-    return templates.TemplateResponse(request, "workspace.html", {"client": client})
+    _, label, _, template = next(t for t in TABS if t[0] == tab)
+    return templates.TemplateResponse(request, template, {"client": client, "tab": tab, "tab_label": label})
+
+
+@app.get("/w/{slug}", response_class=HTMLResponse)
+def workspace(request: Request, slug: str):
+    return _page(request, slug, "measures")
+
+
+def _add_page(tab: str, path: str) -> None:
+    def page(request: Request, slug: str):
+        return _page(request, slug, tab)
+    app.add_api_route(f"/w/{{slug}}{path}", page, response_class=HTMLResponse, name=f"page_{tab}")
+
+
+for _tab, _, _path, _ in TABS:
+    if _path:
+        _add_page(_tab, _path)
 
 
 @app.get("/admin")
@@ -246,6 +272,7 @@ def index(request: Request):
             c = dict(row)
             c["progress"] = db.client_progress(conn, c["id"])
             c["dashboards"] = conn.execute("SELECT COUNT(*) FROM dashboards WHERE client_id = ?", (c["id"],)).fetchone()[0]
+            c["processes"] = conn.execute("SELECT COUNT(*) FROM processes WHERE client_id = ? AND name <> ''", (c["id"],)).fetchone()[0]
             clients.append(c)
     return templates.TemplateResponse(request, "index.html", {"clients": clients})
 
@@ -278,18 +305,18 @@ def state(slug: str):
     with db.transaction() as conn:
         c = _client(conn, slug)
         return {
-            "client": {k: c[k] for k in ("slug", "name", "is_demo")},
+            **shared(conn, c),
             "dashboards": [dict(r) for r in conn.execute(
                 "SELECT id, code, name, position FROM dashboards WHERE client_id = ? ORDER BY position", (c["id"],))],
-            "people": [dict(r) for r in conn.execute(
-                "SELECT id, name, role, email FROM people WHERE client_id = ? ORDER BY name COLLATE NOCASE", (c["id"],))],
             "requirements": [db.requirement_dict(r) for r in conn.execute(
                 """SELECT r.* FROM requirements r JOIN dashboards d ON d.id = r.dashboard_id
                    WHERE d.client_id = ?""", (c["id"],))],
-            "sources": c["sources"],
+            "processes": [dict(r) for r in conn.execute(
+                "SELECT id, name FROM processes WHERE client_id = ? ORDER BY position, id", (c["id"],))],
+            "dimensions": [dict(r) for r in conn.execute(
+                "SELECT id, name FROM dimensions WHERE client_id = ? ORDER BY position, id", (c["id"],))],
             "slots": c["slots"],
             "max_slots": db.MAX_SLOTS,
-            "archived": conn.execute("SELECT COUNT(*) FROM archive WHERE client_id = ?", (c["id"],)).fetchone()[0],
         }
 
 
@@ -300,14 +327,24 @@ def update_requirement(slug: str, rid: int, patch: RequirementPatch, x_actor: st
         c = _client(conn, slug)
         actor_id = _actor(conn, c["id"], x_actor)
         current = _get_requirement(conn, c["id"], rid)
+        if "ref_id" in changes:
+            if len(changes) > 1:
+                raise HTTPException(422, "Send ref_id on its own")
+            return current if changes["ref_id"] == current["ref_id"] else _set_ref(conn, c["id"], current, changes["ref_id"], actor_id)
         for key in ("owner_id", "sme_id", "assignee_id"):
-            if changes.get(key) is not None and not conn.execute(
-                "SELECT 1 FROM people WHERE id = ? AND client_id = ?", (changes[key], c["id"])
-            ).fetchone():
-                raise HTTPException(422, f"{key} does not match a person in this workspace")
+            check_person(conn, c["id"], changes.get(key), key)
+        if changes.get("process_id") is not None and not items.get_item(conn, c["id"], "process", changes["process_id"]):
+            raise HTTPException(422, "process_id does not match a process in this workspace")
+        if "dimension_ids" in changes:
+            changes["dimension_ids"] = list(dict.fromkeys(changes["dimension_ids"] or []))
+            known = {r[0] for r in conn.execute("SELECT id FROM dimensions WHERE client_id = ?", (c["id"],))}
+            if set(changes["dimension_ids"]) - known:
+                raise HTTPException(422, "dimension_ids includes a dimension that isn't in this workspace")
         changes = {k: v for k, v in changes.items() if current.get(k) != v}
         if not changes:
             return current
+        if current["ref_id"] is not None:
+            raise HTTPException(422, "This cell shows a measure from another dashboard. Edit it where it's defined.")
 
         # Ticking "I don't know" on any question flags the measure for
         # follow-up. Unticking leaves the flag; it's cleared by hand after triage.
@@ -321,7 +358,7 @@ def update_requirement(slug: str, rid: int, patch: RequirementPatch, x_actor: st
         # completed one reopens it, so "complete" always means every question
         # is answered.
         status = current["status"]
-        content_change = any(k not in ("assignee_id", "followup", "followup_note") for k in changes)
+        content_change = any(k not in ("assignee_id", "followup", "followup_note", "process_id") for k in changes)
         if status == "not_started" and content_change:
             changes["status"] = "in_progress"
         elif status == "complete" and not db.is_complete_ready(merged):
@@ -329,7 +366,7 @@ def update_requirement(slug: str, rid: int, patch: RequirementPatch, x_actor: st
             changes["completed_at"] = None
 
         stored = dict(changes)
-        for key in ("sources", "unknown"):
+        for key in ("sources", "unknown", "dimension_ids"):
             if key in stored:
                 stored[key] = json.dumps(stored[key])
         stored["updated_at"] = db.now()
@@ -339,6 +376,10 @@ def update_requirement(slug: str, rid: int, patch: RequirementPatch, x_actor: st
 
         if "assignee_id" in changes:
             _log(conn, rid, actor_id, "assigned", f"Assigned to {_person_name(conn, changes['assignee_id'])}")
+        if "process_id" in changes:
+            proc = items.get_item(conn, c["id"], "process", changes["process_id"]) if changes["process_id"] else None
+            _log(conn, rid, actor_id, "linked", f"Linked to {proc['name'] or 'a process'}" if proc else "Unlinked from its process")
+            del changes["process_id"]
         if auto_flag:
             _log(conn, rid, actor_id, "followup", "Flagged for follow-up: “I don't know” on "
                  + ", ".join(db.QUESTION_LABELS[k].lower() for k in newly_unknown))
@@ -359,6 +400,8 @@ def change_status(slug: str, rid: int, body: StatusChange, x_actor: str | None =
         c = _client(conn, slug)
         actor_id = _actor(conn, c["id"], x_actor)
         current = _get_requirement(conn, c["id"], rid)
+        if current["ref_id"] is not None:
+            raise HTTPException(422, "This cell shows a measure from another dashboard. Change its status where it's defined.")
         if body.status == "complete" and not db.is_complete_ready(current):
             missing = [k for k, ok in current["answered"].items() if not ok]
             raise HTTPException(422, "Answer every question first: " + ", ".join(missing))
@@ -391,11 +434,26 @@ def activity(slug: str, rid: int):
 def add_person(slug: str, body: PersonIn):
     with db.transaction() as conn:
         c = _client(conn, slug)
+        check_department(conn, c["id"], body.department_id, "department_id")
         cur = conn.execute(
-            "INSERT INTO people (client_id, name, role, email, created_at) VALUES (?, ?, ?, ?, ?)",
-            (c["id"], body.name.strip(), body.role.strip(), body.email.strip(), db.now()),
+            "INSERT INTO people (client_id, name, role, email, department_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (c["id"], body.name.strip(), body.role.strip(), body.email.strip(), body.department_id, db.now()),
         )
-        return dict(conn.execute("SELECT id, name, role, email FROM people WHERE id = ?", (cur.lastrowid,)).fetchone())
+        return dict(conn.execute("SELECT id, name, role, email, department_id FROM people WHERE id = ?",
+                                 (cur.lastrowid,)).fetchone())
+
+
+@app.patch("/api/w/{slug}/people/{pid}")
+def update_person(slug: str, pid: int, body: PersonPatch):
+    changes = body.model_dump(exclude_unset=True)
+    with db.transaction() as conn:
+        c = _client(conn, slug)
+        check_person(conn, c["id"], pid, "person")
+        check_department(conn, c["id"], changes.get("department_id"), "department_id")
+        changes = {k: v.strip() if isinstance(v, str) else v for k, v in changes.items()}
+        if changes:
+            conn.execute(f"UPDATE people SET {', '.join(f'{k} = ?' for k in changes)} WHERE id = ?", (*changes.values(), pid))
+        return dict(conn.execute("SELECT id, name, role, email, department_id FROM people WHERE id = ?", (pid,)).fetchone())
 
 
 @app.delete("/api/w/{slug}/people/{pid}", status_code=204)
@@ -438,7 +496,12 @@ def update_dashboard(slug: str, did: int, body: DashboardPatch):
             conn.execute("UPDATE dashboards SET code = ? WHERE id = ?", (code, did))
         if body.name is not None:
             conn.execute("UPDATE dashboards SET name = ? WHERE id = ?", (body.name.strip(), did))
-        return dict(conn.execute("SELECT id, code, name, position FROM dashboards WHERE id = ?", (did,)).fetchone())
+        for k in db.DASHBOARD_USE:
+            if getattr(body, k) is not None:
+                conn.execute(f"UPDATE dashboards SET {k} = ? WHERE id = ?", (getattr(body, k), did))
+        # The grid's fields, plus any "data use" answers that were just saved.
+        fields = ["id", "code", "name", "position", *(k for k in db.DASHBOARD_USE if k in body.model_fields_set)]
+        return dict(conn.execute(f"SELECT {', '.join(fields)} FROM dashboards WHERE id = ?", (did,)).fetchone())
 
 
 @app.post("/api/w/{slug}/slots")
@@ -482,7 +545,7 @@ def list_archive(slug: str):
         for a in conn.execute(
             """SELECT a.*, p.name AS archived_by_name FROM archive a LEFT JOIN people p ON p.id = a.archived_by
                WHERE a.client_id = ? ORDER BY a.archived_at DESC, a.id DESC""", (c["id"],)):
-            cells = json.loads(a["payload"])["cells"]
+            cells = json.loads(a["payload"]).get("cells", [])  # processes and dimensions have none
             out.append({"id": a["id"], "kind": a["kind"], "label": a["label"], "archived_at": a["archived_at"],
                         "archived_by": a["archived_by_name"],
                         "measures": [x["name"] for x in cells if x["name"]]})
@@ -508,74 +571,37 @@ def set_sources(slug: str, body: SourcesIn):
 
 
 # ---------------------------------------------------------------------------
-# Exports: the content handed over at the end, in whatever home the client wants
+# Exports: the content handed over at the end, built in exports.py
 # ---------------------------------------------------------------------------
+
+def _export(slug: str, build, media_type: str, filename: str, disposition: str = "attachment") -> Response:
+    with db.transaction() as conn:
+        body = build(conn, _client(conn, slug))
+    return Response(body, media_type=media_type,
+                    headers={"Content-Disposition": f'{disposition}; filename="{slug}-{filename}"'})
+
 
 @app.get("/w/{slug}/export.csv")
 def export_csv(slug: str):
-    with db.transaction() as conn:
-        c = _client(conn, slug)
-        rows = _defined_rows(conn, c["id"])
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["dashboard", "slot", "measure", "definition", "calculation", "source_systems",
-                "benchmark_target", "trusted_report", "breakdowns", "date_and_periods", "refresh", "refresh_why",
-                "changes_to_past_numbers", "definition_owner", "subject_matter_expert", "dont_know", "assignee",
-                "status", "follow_up", "follow_up_note", "notes", "updated_at"])
-    for r in rows:
-        w.writerow([
-            r["code"] + (f" {r['dashboard']}" if r["dashboard"] else ""), f"M{r['slot']}", r["name"], r["description"],
-            r["formula"], _sources_text(r),
-            "(none)" if r["target_none"] and not r["target"] else r["target"],
-            "(none today)" if r["report_none"] and not r["report"] else r["report"],
-            "(same as current report)" if r["breakdowns_same"] and not r["breakdowns"] else r["breakdowns"],
-            r["time_basis"], r["refresh"], r["refresh_why"],
-            "(past numbers don't change)" if r["restatement_none"] and not r["restatement"] else r["restatement"],
-            r["owner"] or r["owner_note"], r["sme"] or r["sme_note"], _unknown_text(r), r["assignee"] or "",
-            r["status"], "yes" if r["followup"] else "", r["followup_note"], r["notes"], r["updated_at"] or "",
-        ])
-    return Response(buf.getvalue(), media_type="text/csv",
-                    headers={"Content-Disposition": f'attachment; filename="{slug}-requirements.csv"'})
+    return _export(slug, exports.measures_csv, "text/csv", "requirements.csv")
 
 
 @app.get("/w/{slug}/export.md", response_class=PlainTextResponse)
 def export_markdown(slug: str):
     """A measure catalogue in Markdown: pastes into Confluence, SharePoint, Notion or a repo wiki."""
-    with db.transaction() as conn:
-        c = _client(conn, slug)
-        rows = _defined_rows(conn, c["id"])
-    out = [f"# {c['name']}: measure catalogue", "",
-           f"{len(rows)} measures. Generated {db.now()[:10]}.", ""]
-    current = None
-    for r in rows:
-        if r["code"] != current:
-            current = r["code"]
-            out += [f"## {r['code']}" + (f": {r['dashboard']}" if r["dashboard"] else ""), ""]
-        out += [f"### {r['name']}", ""]
-        if r["description"]:
-            out += [r["description"], ""]
-        status = {"complete": "Agreed", "in_progress": "Draft", "not_started": "Not started"}[r["status"]]
-        fields = [
-            ("Status", status + (" (needs follow-up)" if r["followup"] else "")),
-            ("Definition owner", r["owner"] or r["owner_note"] or "Not yet named"),
-            ("Subject matter expert", r["sme"] or r["sme_note"] or "Not yet named"),
-            ("Calculation", r["formula"]),
-            ("Source systems", _sources_text(r)),
-            ("Benchmark or target", r["target"] or ("None" if r["target_none"] else "")),
-            ("Breakdowns", r["breakdowns"] or ("Same as the current report" if r["breakdowns_same"] else "")),
-            ("Date and periods", r["time_basis"]),
-            ("Refresh", REFRESH_LABELS.get(r["refresh"], "") + (f" ({r['refresh_why']})" if r["refresh_why"] else "")),
-            ("Changes to past numbers", r["restatement"] or ("Past numbers don't change" if r["restatement_none"] else "")),
-            ("Trusted report", r["report"] or ("None today" if r["report_none"] else "")),
-            ("Don't know yet", _unknown_text(r)),
-        ]
-        out += ["| | |", "|---|---|"]
-        out += [f"| {k} | {v.replace('|', '/').replace(chr(10), ' ')} |" for k, v in fields if v]
-        if r["followup"] and r["followup_note"]:
-            out += ["", f"> Open question: {r['followup_note']}"]
-        out.append("")
-    return PlainTextResponse("\n".join(out), media_type="text/markdown",
-                             headers={"Content-Disposition": f'inline; filename="{slug}-catalogue.md"'})
+    return _export(slug, exports.catalogue_md, "text/markdown", "catalogue.md", "inline")
 
 
+@app.get("/w/{slug}/handbook.md", response_class=PlainTextResponse)
+def export_handbook(slug: str):
+    """Processes, bus matrix, dimensions, measures, dashboards and ownership in one document."""
+    return _export(slug, exports.handbook_md, "text/markdown", "handbook.md", "inline")
+
+
+@app.get("/w/{slug}/bus-matrix.csv")
+def export_bus(slug: str):
+    return _export(slug, exports.bus_csv, "text/csv", "bus-matrix.csv")
+
+
+app.include_router(planning.router)
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")

@@ -1,31 +1,11 @@
 "use strict";
+/* The measures page: a grid of dashboards by measure slots, and a drawer with
+   the twelve questions. Shared pieces (api, People, Archive, "You are") are in
+   common.js.
 
-const SLUG = document.body.dataset.slug;
-const API = `/api/w/${SLUG}`;
+   A measure is defined in one cell. Other dashboards can show it: their cell
+   has a ref_id and nothing else, and opening it opens the measure itself. */
 
-const $ = (s, r = document) => r.querySelector(s);
-const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-function h(tag, props, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(props || {})) {
-    if (v == null || v === false) continue;
-    if (k === "class") el.className = v;
-    else if (k === "text") el.textContent = v;
-    else if (k === "value") el.value = v;
-    else if (k === "checked") el.checked = !!v;
-    else if (k === "dataset") Object.assign(el.dataset, v);
-    else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
-    else el.setAttribute(k, v === true ? "" : v);
-  }
-  for (const c of kids.flat()) { if (c == null || c === false) continue; el.append(c.nodeType ? c : document.createTextNode(String(c))); }
-  return el;
-}
-const store = {
-  get(k) { try { return localStorage.getItem(`mreq:${SLUG}:${k}`); } catch { return null; } },
-  set(k, v) { try { v == null ? localStorage.removeItem(`mreq:${SLUG}:${k}`) : localStorage.setItem(`mreq:${SLUG}:${k}`, v); } catch {} },
-};
-
-const STATUS = { not_started: "Not started", in_progress: "In progress", complete: "Complete" };
 const REFRESH = [
   ["monthly", "Monthly", "After month-end close"],
   ["weekly", "Weekly", "Once a week"],
@@ -47,40 +27,20 @@ const Q = [
   { key: "sme", title: "Who is the subject matter expert to contact for questions?", why: "The person who knows how the number works day to day. It can be the owner." },
 ];
 
-const S = {
-  dashboards: [], people: [], reqs: new Map(), sources: [], slots: 4, maxSlots: 12, archived: 0,
-  me: store.get("me") ? Number(store.get("me")) : null,
-  filter: "all", open: null,
-};
-
-/* ---------- api ---------- */
-async function api(method, path, body) {
-  const res = await fetch(path, {
-    method,
-    headers: { "Content-Type": "application/json", ...(S.me ? { "X-Actor": String(S.me) } : {}) },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (!res.ok) {
-    let msg = `${res.status}`;
-    try { const j = await res.json(); msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch {}
-    throw new Error(msg);
-  }
-  return res.status === 204 ? null : res.json();
-}
-let toastT;
-function toast(msg, err) {
-  const t = $("#toast"); t.textContent = msg; t.classList.toggle("err", !!err); t.classList.add("on");
-  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("on"), 3500);
-}
+Object.assign(S, { dashboards: [], reqs: new Map(), processes: [], dimensions: [], slots: 4, maxSlots: 12, filter: "all", open: null, via: null });
 
 async function load() {
   const st = await api("GET", `${API}/state`);
-  S.dashboards = st.dashboards; S.people = st.people; S.sources = st.sources; S.slots = st.slots; S.maxSlots = st.max_slots; S.archived = st.archived;
+  setShared(st);
+  S.dashboards = st.dashboards; S.processes = st.processes; S.dimensions = st.dimensions; S.slots = st.slots; S.maxSlots = st.max_slots;
   // Rebuilt each time, so cells in rows or columns deleted elsewhere drop out.
   S.reqs = new Map(st.requirements.map(r => [r.id, pending.has(r.id) ? { ...r, ...pending.get(r.id) } : r]));
   if (S.open && !S.reqs.has(S.open)) { pending.delete(S.open); closeDrawer(); }
-  if (S.me && !S.people.some(p => p.id === S.me)) { S.me = null; store.set("me", null); }
+  if (S.via && S.reqs.get(S.via)?.ref_id !== S.open) S.via = null;  // no longer shown there
   renderAll();
+  // Other pages link straight to a measure as #m<id>.
+  const linked = /^#m(\d+)$/.exec(location.hash);
+  if (linked && S.reqs.has(Number(linked[1]))) { history.replaceState(null, "", location.pathname); openDrawer(Number(linked[1])); }
 }
 
 /* ---------- saving: one debounced PATCH per requirement ---------- */
@@ -111,7 +71,6 @@ function flush(id) {
 window.addEventListener("beforeunload", () => { for (const id of [...pending.keys()]) flush(id); });
 
 /* ---------- helpers ---------- */
-const person = id => S.people.find(p => p.id === id) || null;
 // "I don't know" counts as answered; those get followed up by hand.
 const unknownOf = r => r.unknown || {};
 function answered(r) {
@@ -123,7 +82,7 @@ function answered(r) {
     sources: (r.sources || []).length > 0 || has("source_other"),
     target: has("target") || !!r.target_none,
     report: has("report") || !!r.report_none,
-    breakdowns: has("breakdowns") || !!r.breakdowns_same,
+    breakdowns: has("breakdowns") || !!r.breakdowns_same || (r.dimension_ids || []).length > 0,
     time: has("time_basis"),
     refresh: has("refresh"),
     restatement: has("restatement") || !!r.restatement_none,
@@ -134,17 +93,14 @@ function answered(r) {
   return ans;
 }
 const doneCount = r => Object.values(answered(r)).filter(Boolean).length;
-function rel(iso) {
-  if (!iso) return "";
-  const s = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (s < 60) return "just now";
-  if (s < 3600) return Math.floor(s / 60) + " min ago";
-  if (s < 86400) return Math.floor(s / 3600) + " h ago";
-  if (s < 604800) return Math.floor(s / 86400) + " d ago";
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
 function reqAt(dashId, slot) { for (const r of S.reqs.values()) if (r.dashboard_id === dashId && r.slot === slot) return r; return null; }
-function matches(r) {
+// What a cell shows: its own measure, or the one it shares from another dashboard.
+const shownIn = r => r.ref_id != null ? S.reqs.get(r.ref_id) || r : r;
+const sharesOf = id => [...S.reqs.values()].filter(r => r.ref_id === id);
+const dashOf = id => S.dashboards.find(d => d.id === id);
+const named = r => !!(r.name || "").trim();
+function matches(cell) {
+  const r = shownIn(cell);
   if (S.filter === "mine") return S.me != null && r.assignee_id === S.me;
   if (S.filter === "followup") return r.followup;
   if (S.filter === "unassigned") return !!(r.name || "").trim() && !person(r.assignee_id);
@@ -154,8 +110,7 @@ function matches(r) {
 
 /* ---------- header ---------- */
 function renderSummary() {
-  $("#btn-archive").textContent = S.archived ? `Archive (${S.archived})` : "Archive";
-  const defined = [...S.reqs.values()].filter(r => (r.name || "").trim());
+  const defined = [...S.reqs.values()].filter(named), shared = [...S.reqs.values()].filter(r => r.ref_id != null).length;
   const c = { not_started: 0, in_progress: 0, complete: 0 };
   defined.forEach(r => c[r.status]++);
   const n = defined.length, follow = defined.filter(r => r.followup).length;
@@ -167,11 +122,9 @@ function renderSummary() {
     h("span", {}, h("i", { style: "background:var(--warn)" }), `${c.in_progress} in progress`),
     h("span", {}, h("i", { style: "background:var(--line-2)" }), `${c.not_started} not started`),
     h("span", {}, h("i", { style: "background:var(--flag)" }), `${follow} need follow-up`),
-    h("span", { class: "muted", text: `${S.dashboards.length * S.slots - n} empty slots` }),
+    shared ? h("span", { class: "muted", text: `${shared} shown on a second dashboard` }) : null,
+    h("span", { class: "muted", text: `${S.dashboards.length * S.slots - n - shared} empty slots` }),
   );
-  const me = $("#me");
-  me.replaceChildren(h("option", { value: "", text: "Choose your name" }), ...S.people.map(p => h("option", { value: p.id, text: p.name })));
-  me.value = S.me ?? "";
 }
 
 /* ---------- grid ---------- */
@@ -184,20 +137,24 @@ function renderGrid() {
     S.slots > 1 ? h("button", { class: "del", title: `Delete Measure ${s}`, "aria-label": `Delete measure column ${s}`, onclick: () => deleteSlot(s), text: "×" }) : null));
   kids.push(S.slots < S.maxSlots ? h("button", { class: "add-col", title: "Add a measure", "aria-label": "Add a measure column", onclick: addSlot, text: "+" }) : h("div"));
   for (const d of S.dashboards) {
-    const rowReqs = [...S.reqs.values()].filter(r => r.dashboard_id === d.id && (r.name || "").trim());
+    const rowReqs = [...S.reqs.values()].filter(r => r.dashboard_id === d.id).map(shownIn).filter(named);
     kids.push(h("div", { class: "row-h" },
       h("button", { class: "del", title: `Delete ${d.code}`, "aria-label": `Delete dashboard ${d.code}`, onclick: () => deleteDashboard(d), text: "×" }),
       dashInput(d, "code", { class: "dcode", maxlength: "12", "aria-label": "Dashboard code" }),
       dashInput(d, "name", { class: "dname", placeholder: "Add a name", "aria-label": `Name for ${d.code}` }),
       h("span", { class: "rcount", text: `${rowReqs.filter(r => r.status === "complete").length} of ${rowReqs.length} complete` })));
     for (let s = 1; s <= S.slots; s++) {
-      const r = reqAt(d.id, s); if (!r) { kids.push(h("div")); continue; }
-      const empty = !(r.name || "").trim();
+      const cell = reqAt(d.id, s); if (!cell) { kids.push(h("div")); continue; }
+      const r = shownIn(cell), isRef = r !== cell, empty = !isRef && !named(r);
       const who = person(r.assignee_id);
       const ans = answered(r);
-      const cls = ["cell", "s-" + r.status, empty && "empty", S.open === r.id && "active", S.filter !== "all" && !matches(r) && "dim"].filter(Boolean).join(" ");
-      kids.push(h("button", { class: cls, role: "gridcell", onclick: () => openDrawer(r.id), "aria-label": `${d.code} measure ${s}: ${empty ? "empty" : r.name}` },
-        h("span", { class: "c-name", text: empty ? "+ Define a measure" : r.name }),
+      const shares = isRef ? [] : sharesOf(r.id), home = isRef ? dashOf(r.dashboard_id) : null;
+      const share = isRef ? `From ${home?.code}` : shares.length === 1 ? `Also on ${dashOf(shares[0].dashboard_id)?.code}` : shares.length ? `Also on ${shares.length} more` : "";
+      const cls = ["cell", "s-" + r.status, empty && "empty", isRef && "shared", S.open === r.id && "active", S.filter !== "all" && !matches(cell) && "dim"].filter(Boolean).join(" ");
+      kids.push(h("button", { class: cls, role: "gridcell", onclick: () => openDrawer(cell.id),
+        "aria-label": `${d.code} measure ${s}: ${empty ? "empty" : (r.name || "Unnamed measure") + (isRef ? `, defined on ${home?.code}` : "")}` },
+        h("span", { class: "c-name", text: empty ? "+ Define a measure" : r.name || "Unnamed measure" }),
+        share ? h("span", { class: "c-share", text: share }) : null,
         empty && !who ? null : h("span", { class: "c-who", text: who ? (who.id === S.me ? "You" : who.name) : "Unassigned" }),
         empty ? null : h("span", { class: "c-foot" },
           h("span", { class: "pill s-" + r.status, text: STATUS[r.status] }),
@@ -233,7 +190,10 @@ const measuresIn = pred => [...S.reqs.values()].filter(r => pred(r) && (r.name |
 const nMeasures = n => `${n} measure${n === 1 ? "" : "s"}`;
 async function deleteDashboard(d) {
   const n = measuresIn(r => r.dashboard_id === d.id);
-  if (!confirm(`Delete ${d.code}${n ? ` and its ${nMeasures(n)}` : ""}? It goes to the archive, where you can restore it.`)) return;
+  const elsewhere = [...new Set([...S.reqs.values()].filter(r => r.ref_id != null && S.reqs.get(r.ref_id)?.dashboard_id === d.id)
+    .map(r => dashOf(r.dashboard_id)?.code))];
+  if (!confirm(`Delete ${d.code}${n ? ` and its ${nMeasures(n)}` : ""}? It goes to the archive, where you can restore it.`
+    + (elsewhere.length ? ` Its measures also come off ${elsewhere.join(", ")} until it's restored.` : ""))) return;
   const open = S.open && S.reqs.get(S.open);
   if (open && open.dashboard_id === d.id) closeDrawer();
   await Promise.all([...S.reqs.values()].filter(r => r.dashboard_id === d.id).map(r => flush(r.id)));
@@ -304,9 +264,11 @@ function personPicker(id, key, notePlaceholder) {
   });
   return [sel, wrap];
 }
-function openDrawer(id) {
+function openDrawer(cellId) {
+  // A cell that shows another dashboard's measure opens that measure.
+  const cell = S.reqs.get(cellId), id = cell.ref_id != null && S.reqs.has(cell.ref_id) ? cell.ref_id : cellId;
   if (S.open && S.open !== id) flush(S.open);
-  S.open = id;
+  S.open = id; S.via = id === cellId ? null : cellId;
   const r = S.reqs.get(id), d = S.dashboards.find(x => x.id === r.dashboard_id);
   const root = $("#drawer-inner");
 
@@ -322,6 +284,9 @@ function openDrawer(id) {
   const completeBtn = h("button", { class: "btn ok", id: "d-complete", onclick: () => toggleComplete(id) });
 
   const srcWrap = h("div", { class: "chips", id: "d-sources", role: "group", "aria-label": "Source systems" });
+  const process = h("select", { class: "select", id: "d-process", dataset: { field: "process_id", kind: "person" } });
+  process.addEventListener("change", () => save(id, { process_id: process.value ? Number(process.value) : null }, 0));
+  const dimWrap = h("div", { class: "chips", id: "d-dims", role: "group", "aria-label": "Dimensions" });
 
   const bodies = {
     name: [title],
@@ -333,7 +298,7 @@ function openDrawer(id) {
       h("label", { class: "check" }, bindCheck(h("input", { type: "checkbox", id: "d-t-none" }), id, "target_none"), "No benchmark, target or threshold")],
     report: [bindText(h("textarea", { class: "input", id: "d-report", rows: "2", placeholder: "How it's used today, and a link to the trusted report (SharePoint, Power BI, Excel) or where to find it." }), id, "report"),
       h("label", { class: "check" }, bindCheck(h("input", { type: "checkbox", id: "d-r-none" }), id, "report_none"), "Not used today, or no trusted report to test against")],
-    breakdowns: [bindText(h("textarea", { class: "input", id: "d-breakdowns", rows: "2", placeholder: "e.g. By product and customer, rolling up to product family and region. Lowest level: individual order line." }), id, "breakdowns"),
+    breakdowns: [dimWrap, bindText(h("textarea", { class: "input", id: "d-breakdowns", rows: "2", placeholder: "e.g. By product and customer, rolling up to product family and region. Lowest level: individual order line." }), id, "breakdowns"),
       h("label", { class: "check" }, bindCheck(h("input", { type: "checkbox", id: "d-b-same" }), id, "breakdowns_same"), "Same breakdowns as the current report")],
     time: [bindText(h("textarea", { class: "input", id: "d-time", rows: "2", placeholder: "e.g. Ship date. Fiscal periods. Week, MTD, YTD and prior year." }), id, "time_basis")],
     refresh: [h("div", { class: "radios", role: "radiogroup", "aria-label": "Refresh timing" }, REFRESH.map(([v, t, s]) => {
@@ -349,14 +314,17 @@ function openDrawer(id) {
   };
 
   root.replaceChildren(
-    h("div", { class: "d-top" }, h("span", { class: "d-crumb", text: `${d.code}${d.name ? " · " + d.name : ""} · Measure ${r.slot}` }), h("button", { class: "x", "aria-label": "Close", onclick: closeDrawer, text: "×" })),
+    h("div", { class: "d-top" }, h("span", { class: "d-crumb", id: "d-crumb" }), h("button", { class: "x", "aria-label": "Close", onclick: closeDrawer, text: "×" })),
     h("div", { class: "d-meta" }, h("span", { class: "pill", id: "d-pill" }), h("span", { id: "d-updated" })),
     h("div", { class: "panel" },
       h("div", {}, h("label", { class: "lbl", for: "d-assignee", text: "Assigned to" }), assign),
       h("div", { class: "complete-row" }, completeBtn, h("span", { class: "hint", id: "d-hint" })),
       h("div", { class: "full" }, h("label", { class: "check flagbox" }, flag, "Flag measure for follow-up"),
         h("p", { class: "flag-hint", text: "Questions with \u201cI don't know\u201d checked will also flag this measure for follow-up." })),
-      h("div", { class: "full", id: "d-followup-wrap" }, flagNote)),
+      h("div", { class: "full", id: "d-followup-wrap" }, flagNote),
+      h("div", { class: "full process-row" }, h("label", { class: "lbl", for: "d-process", text: "Business process" }), process,
+        h("p", { class: "flag-hint", text: "The process that produces this number. It places the measure on the bus matrix." }))),
+    h("div", { class: "share", id: "d-share" }),
     ...Q.map((q, i) => h("section", { class: "q" },
       h("div", { class: "q-num", id: "q-" + q.key, text: String(i + 1).padStart(2, "0") }),
       h("div", {}, h("h3", { text: q.title }), h("p", { class: "why", text: q.why }), q.note ? h("p", { class: "q-note", text: q.note }) : null),
@@ -375,7 +343,7 @@ function openDrawer(id) {
 }
 function closeDrawer() {
   if (S.open) flush(S.open);
-  S.open = null;
+  S.open = null; S.via = null;
   $("#drawer").classList.remove("open"); $("#drawer").setAttribute("aria-hidden", "true");
   $("#scrim").classList.remove("open");
   renderGrid();
@@ -399,6 +367,24 @@ function syncDrawer() {
     }
   }
   peopleOptions($("#d-assignee"), "Unassigned");
+  const proc = $("#d-process"), procVal = proc.value;
+  proc.replaceChildren(h("option", { value: "", text: S.processes.length ? "Not linked" : "No processes yet (add them on Processes)" }),
+    ...S.processes.map(x => h("option", { value: x.id, text: x.name || "Unnamed process" })));
+  proc.value = procVal;
+  if (!("dimension_ids" in p)) {
+    const chosen = (r.dimension_ids || []).filter(d => S.dimensions.some(x => x.id === d));
+    const key = S.dimensions.map(d => d.id + d.name).join("\u0001") + "|" + chosen.join(",");
+    const dw = $("#d-dims", root);
+    if (dw.dataset.key !== key) {
+      dw.dataset.key = key;
+      dw.replaceChildren(...S.dimensions.map(d => {
+        const inp = h("input", { type: "checkbox", id: "d-dim-" + d.id, value: d.id, checked: chosen.includes(d.id) });
+        inp.addEventListener("change", () => save(id, { dimension_ids: $$("#d-dims input").filter(x => x.checked).map(x => Number(x.value)) }, 250));
+        return h("label", { class: "chip", for: "d-dim-" + d.id }, inp, h("span", { text: d.name || "Unnamed" }));
+      }));
+      dw.hidden = !S.dimensions.length;
+    }
+  }
   for (const k of ["owner", "sme"]) peopleOptions($(`#d-${k}`), "Choose a person", [h("option", { value: "other", text: "Someone not listed…" })]);
   if (!("unknown" in p)) $$("[data-unknown]", root).forEach(box => {
     const k = box.dataset.unknown, on = k in unknownOf(r), who = $(`#d-who-${k}`, root);
@@ -424,6 +410,7 @@ function syncDrawer() {
 }
 function syncState() {
   const id = S.open; if (!id) return;
+  renderShare();
   const r = S.reqs.get(id), ans = answered(r), n = doneCount(r);
   const pill = $("#d-pill"); pill.className = "pill s-" + r.status; pill.textContent = STATUS[r.status];
   Q.forEach((q, i) => {
@@ -439,6 +426,72 @@ function syncState() {
     hint.textContent = n < Q.length ? `${Q.length - n} left.` : "Every question answered.";
   }
 }
+/* ---------- the same measure on several dashboards ---------- */
+const where = r => { const d = dashOf(r.dashboard_id); return `${d?.code} · Measure ${r.slot}`; };
+function renderShare() {
+  const id = S.open, r = S.reqs.get(id), box = $("#d-share"), via = S.via && S.reqs.get(S.via);
+  const home = dashOf(r.dashboard_id);
+  $("#d-crumb").textContent = via ? `${where(via)} · defined on ${home?.code}` : `${home?.code}${home?.name ? " · " + home.name : ""} · Measure ${r.slot}`;
+  const shares = sharesOf(id);
+  // Same name as a measure defined on another dashboard: probably the same measure.
+  const twin = named(r) && [...S.reqs.values()].find(x => x.id !== id && x.ref_id == null && x.dashboard_id !== r.dashboard_id
+    && (x.name || "").trim().toLowerCase() === r.name.trim().toLowerCase());
+  const fresh = !named(r) && !shares.length && r.status === "not_started";
+  const key = [id, S.via, fresh, twin?.id, twin && doneCount(r), shares.map(x => x.id), S.dashboards.map(d => d.code), fresh && [...S.reqs.values()].filter(named).map(x => x.id + x.name)].join("|");
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const kids = [];
+  if (fresh) {
+    const onHere = new Set([...S.reqs.values()].filter(x => x.dashboard_id === r.dashboard_id && x.ref_id != null).map(x => x.ref_id));
+    const options = S.dashboards.filter(d => d.id !== r.dashboard_id).map(d => {
+      const ms = [...S.reqs.values()].filter(x => x.dashboard_id === d.id && x.ref_id == null && named(x) && !onHere.has(x.id)).sort((a, b) => a.slot - b.slot);
+      return ms.length ? h("optgroup", { label: d.code + (d.name ? " · " + d.name : "") }, ms.map(x => h("option", { value: x.id, text: x.name }))) : null;
+    }).filter(Boolean);
+    if (options.length) {
+      const sel = h("select", { class: "select", id: "d-use", "aria-label": "Use a measure from another dashboard" },
+        h("option", { value: "", text: "Choose a measure" }), ...options);
+      sel.addEventListener("change", () => sel.value && useExisting(id, Number(sel.value)));
+      kids.push(h("label", { class: "lbl", for: "d-use", text: "Already defined on another dashboard?" }), sel,
+        h("p", { class: "share-note", text: "Show it here instead of defining it again. One definition, the same number everywhere." }));
+    }
+  } else if (shares.length || via) {
+    kids.push(h("p", { class: "share-h" }, h("b", { text: `On ${shares.length + 1} dashboards. ` }),
+      `Defined on ${where(r)}. Changes here show everywhere it's used.`),
+      h("ul", { class: "share-list" }, shares.map(x => h("li", {},
+        h("span", { text: where(x) }),
+        h("button", { class: "linkish", text: "Remove", "aria-label": `Remove from ${dashOf(x.dashboard_id)?.code}`, onclick: () => unshare(x.id) })))));
+  } else if (twin) {
+    const here = sharesOf(twin.id).some(x => x.dashboard_id === r.dashboard_id);
+    const onlyName = !here && doneCount(r) === 1 && !(r.notes || "").trim();
+    kids.push(h("p", { class: "share-h" }, here
+      ? `${twin.name} is already on this dashboard, shown from ${dashOf(twin.dashboard_id)?.code}.`
+      : `${twin.name} is also defined on ${where(twin)}. If it's the same measure, define it once and show it on both.`),
+      onlyName ? h("button", { class: "btn sm", text: `Use ${dashOf(twin.dashboard_id)?.code}'s definition`, onclick: () => useExisting(id, twin.id, true) }) : null);
+  }
+  box.replaceChildren(...kids.filter(Boolean));
+  box.hidden = !kids.length;
+}
+async function useExisting(cellId, measureId, clearName) {
+  const m = S.reqs.get(measureId), code = dashOf(m.dashboard_id)?.code;
+  await flush(cellId);
+  try {
+    if (clearName) await api("PATCH", `${API}/requirements/${cellId}`, { name: "" });
+    await api("PATCH", `${API}/requirements/${cellId}`, { ref_id: measureId });
+    await load();
+    openDrawer(cellId);
+    toast(`Showing ${m.name} from ${code}`);
+  } catch (e) { toast("Couldn't do that: " + e.message, true); await load(); }
+}
+async function unshare(cellId) {
+  const code = dashOf(S.reqs.get(cellId).dashboard_id)?.code;
+  try {
+    await api("PATCH", `${API}/requirements/${cellId}`, { ref_id: null });
+    if (S.via === cellId) S.via = null;
+    await load();
+    toast(`Removed from ${code}`);
+  } catch (e) { toast("Couldn't remove it: " + e.message, true); }
+}
+
 async function toggleComplete(id) {
   await flush(id);
   const r = S.reqs.get(id);
@@ -459,53 +512,7 @@ async function loadActivity() {
   } catch {}
 }
 
-/* ---------- people & sources dialogs ---------- */
-function renderPeople() {
-  const counts = new Map();
-  for (const r of S.reqs.values()) if (r.assignee_id != null) {
-    const c = counts.get(r.assignee_id) || { a: 0, d: 0 }; c.a++; if (r.status === "complete") c.d++; counts.set(r.assignee_id, c);
-  }
-  $("#people-rows").replaceChildren(...(S.people.length ? S.people.map(p => {
-    const c = counts.get(p.id) || { a: 0, d: 0 };
-    const rm = h("button", { class: "btn ghost danger", text: "Remove" });
-    rm.addEventListener("click", async () => {
-      if (!rm.classList.contains("armed")) { rm.classList.add("armed"); rm.textContent = "Confirm"; setTimeout(() => { rm.classList.remove("armed"); rm.textContent = "Remove"; }, 4000); return; }
-      try { await api("DELETE", `${API}/people/${p.id}`); await load(); toast(`Removed ${p.name}`); } catch (e) { toast(e.message, true); }
-    });
-    return h("tr", {}, h("td", {}, h("b", { text: p.name }), p.email ? h("div", { class: "muted", text: p.email }) : null), h("td", { text: p.role }),
-      h("td", { class: "num", text: String(c.a) }), h("td", { class: "num", text: c.a ? `${c.d}/${c.a}` : "–" }), h("td", { class: "num" }, rm));
-  }) : [h("tr", {}, h("td", { colspan: "5", class: "muted", text: "No one yet. Add the people who will fill in measures." }))]));
-}
-$("#people-form").addEventListener("submit", async e => {
-  e.preventDefault();
-  const f = new FormData(e.target);
-  try {
-    const p = await api("POST", `${API}/people`, { name: f.get("name"), role: f.get("role") || "", email: f.get("email") || "" });
-    e.target.reset(); await load(); toast(`Added ${p.name}`);
-    if (S.me == null) { S.me = p.id; store.set("me", p.id); renderAll(); }
-  } catch (err) { toast(err.message, true); }
-});
-$("#btn-people").addEventListener("click", () => { renderPeople(); $("#dlg-people").showModal(); });
-async function renderArchive() {
-  const rows = await api("GET", `${API}/archive`);
-  $("#archive-rows").replaceChildren(...(rows.length ? rows.map(a => {
-    const btn = h("button", { class: "btn", text: "Restore" });
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      try {
-        const out = await api("POST", `${API}/archive/${a.id}/restore`);
-        await load(); await renderArchive();
-        toast(out.note || `Restored ${a.label}`);
-      } catch (e) { btn.disabled = false; toast("Couldn't restore: " + e.message, true); }
-    });
-    return h("tr", {},
-      h("td", {}, h("b", { text: a.label }), h("div", { class: "muted", text: a.kind === "dashboard" ? "Dashboard row" : "Measure column" })),
-      h("td", { text: a.measures.length ? a.measures.join(", ") : "No measures filled in" }),
-      h("td", { class: "muted" }, rel(a.archived_at), a.archived_by ? h("div", { text: "by " + a.archived_by }) : null),
-      h("td", { class: "num" }, btn));
-  }) : [h("tr", {}, h("td", { colspan: "4", class: "muted", text: "Nothing has been deleted." }))]));
-}
-$("#btn-archive").addEventListener("click", () => { renderArchive().catch(e => toast(e.message, true)); $("#dlg-archive").showModal(); });
+/* ---------- source systems ---------- */
 $("#btn-sources").addEventListener("click", () => { $("#sources-text").value = S.sources.join("\n"); $("#dlg-sources").showModal(); });
 $("#sources-save").addEventListener("click", async () => {
   try {
@@ -513,11 +520,10 @@ $("#sources-save").addEventListener("click", async () => {
     S.sources = r.sources; $("#dlg-sources").close(); syncDrawer(); toast("Source systems saved");
   } catch (e) { toast(e.message, true); }
 });
-$$("[data-close]").forEach(b => b.addEventListener("click", () => b.closest("dialog").close()));
 
 /* ---------- wiring ---------- */
-function renderAll() { renderSummary(); renderGrid(); if (S.open) syncDrawer(); if ($("#dlg-people").open) renderPeople(); }
-$("#me").addEventListener("change", e => { S.me = e.target.value ? Number(e.target.value) : null; store.set("me", S.me); renderAll(); });
+page.render = () => { renderSummary(); renderGrid(); if (S.open) syncDrawer(); };
+page.load = load;
 $$(".seg button").forEach(b => b.addEventListener("click", () => {
   S.filter = b.dataset.filter;
   $$(".seg button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
@@ -527,6 +533,4 @@ $$(".seg button").forEach(b => b.addEventListener("click", () => {
 $("#scrim").addEventListener("click", closeDrawer);
 document.addEventListener("keydown", e => { if (e.key === "Escape" && S.open && !document.querySelector("dialog[open]")) closeDrawer(); });
 
-// Pick up other people's changes. Fields being edited here are left alone.
-setInterval(() => { if (!document.hidden) load().catch(() => {}); }, 15000);
-load().catch(e => toast("Couldn't load: " + e.message, true));
+start();

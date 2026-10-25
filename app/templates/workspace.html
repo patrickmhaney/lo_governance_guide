@@ -1,84 +1,39 @@
-{% extends "base.html" %}
-{% block title %}{{ client.name }} · Requirements · Governance Guide{% endblock %}
-{% block head %}<link rel="stylesheet" href="{{ asset('styles.css') }}">{% endblock %}
-{% block body_class %}app-page{% endblock %}
-{% block body_attrs %}data-slug="{{ client.slug }}"{% endblock %}
-{% block nav %}
-<a href="/">All workspaces</a>
+{% extends "_workspace.html" %}
+{% block top %}
+<div class="progress" aria-live="polite">
+  <div class="progress-head">
+    <div class="progress-big" id="prog-big"></div>
+  </div>
+  <div class="bar"><span class="b-ok" id="bar-ok"></span><span class="b-warn" id="bar-warn"></span></div>
+  <div class="legend" id="legend"></div>
+</div>
 {% endblock %}
-{% block main %}
-<div class="app">
-  {% if client.is_demo %}
-  <div class="demo-note">This is a sample workspace for a fictional company. Click any cell to see the questions. Changes you make here are visible to other visitors.</div>
-  {% endif %}
-  <header class="top">
-    <div>
-      <h1>{{ client.name }}</h1>
-    </div>
-    <div class="progress" aria-live="polite">
-      <div class="progress-head">
-        <div class="progress-big" id="prog-big"></div>
-        <label class="me">You are
-          <select id="me" class="select"></select>
-        </label>
-      </div>
-      <div class="bar"><span class="b-ok" id="bar-ok"></span><span class="b-warn" id="bar-warn"></span></div>
-      <div class="legend" id="legend"></div>
-    </div>
-  </header>
-
-  <div class="toolbar">
-    <div class="seg" role="group" aria-label="Highlight">
-      <button data-filter="all" aria-pressed="true">All</button>
-      <button data-filter="mine" aria-pressed="false">Mine</button>
-      <button data-filter="followup" aria-pressed="false">Needs follow-up</button>
-      <button data-filter="unassigned" aria-pressed="false">Unassigned</button>
-      <button data-filter="unknown" aria-pressed="false">Don't know</button>
-    </div>
-    <span class="spacer"></span>
-    <button class="btn ghost" id="btn-people">People</button>
-    <button class="btn ghost" id="btn-archive">Archive</button>
-    <button class="btn ghost" id="btn-sources">Source systems</button>
-    <a class="btn ghost" href="/w/{{ client.slug }}/export.md" target="_blank" rel="noopener">Catalogue (Markdown)</a>
-    <a class="btn" href="/w/{{ client.slug }}/export.csv">Export CSV</a>
+{% block page %}
+<div class="toolbar">
+  <div class="seg" role="group" aria-label="Highlight">
+    <button data-filter="all" aria-pressed="true">All</button>
+    <button data-filter="mine" aria-pressed="false">Mine</button>
+    <button data-filter="followup" aria-pressed="false">Needs follow-up</button>
+    <button data-filter="unassigned" aria-pressed="false">Unassigned</button>
+    <button data-filter="unknown" aria-pressed="false">Don't know</button>
   </div>
-
-  <div class="grid-wrap">
-    <div class="grid" id="grid" role="grid" aria-label="Dashboards by measure slot"></div>
-  </div>
-  <p class="foot muted">Click a cell to open its requirements. Click a dashboard code or name to edit it, and use + to add a dashboard or a measure. Changes save as you type.</p>
+  <span class="spacer"></span>
+  <button class="btn ghost" id="btn-sources">Source systems</button>
+  <a class="btn ghost" href="/w/{{ client.slug }}/export.md" target="_blank" rel="noopener">Catalogue (Markdown)</a>
+  <a class="btn" href="/w/{{ client.slug }}/export.csv">Export CSV</a>
 </div>
 
-<aside class="drawer" id="drawer" aria-hidden="true" aria-labelledby="d-title">
-  <div class="drawer-inner" id="drawer-inner"></div>
-</aside>
-<div class="scrim" id="scrim"></div>
-
-<dialog id="dlg-people" class="dlg">
-  <div class="dlg-h"><h2>People</h2><button class="x" data-close aria-label="Close">×</button></div>
-  <p class="muted">Everyone who fills in or signs off on measures.</p>
-  <div class="tbl-wrap"><table><thead><tr><th>Name</th><th>Role or team</th><th class="num">Assigned</th><th class="num">Complete</th><th></th></tr></thead><tbody id="people-rows"></tbody></table></div>
-  <form id="people-form" class="form-row">
-    <input class="input" name="name" placeholder="Full name" aria-label="Full name" required>
-    <input class="input" name="role" placeholder="Role or team" aria-label="Role or team">
-    <input class="input" name="email" placeholder="Email (optional)" aria-label="Email">
-    <button class="btn primary" type="submit">Add person</button>
-  </form>
-</dialog>
-
+<div class="grid-wrap">
+  <div class="grid" id="grid" role="grid" aria-label="Dashboards by measure slot"></div>
+</div>
+<p class="foot muted">Click a cell to open its requirements. Click a dashboard code or name to edit it, and use + to add a dashboard or a measure. Changes save as you type.</p>
+{% endblock %}
+{% block dialogs %}
 <dialog id="dlg-sources" class="dlg">
   <div class="dlg-h"><h2>Source systems</h2><button class="x" data-close aria-label="Close">×</button></div>
-  <p class="muted">Offered as choices on every measure. One per line.</p>
+  <p class="muted">Offered as choices on every measure, process and dimension. One per line.</p>
   <textarea id="sources-text" class="input" rows="8"></textarea>
   <div style="margin-top:12px"><button class="btn primary" id="sources-save">Save</button></div>
 </dialog>
-
-<dialog id="dlg-archive" class="dlg">
-  <div class="dlg-h"><h2>Archive</h2><button class="x" data-close aria-label="Close">×</button></div>
-  <p class="muted">Deleted dashboards and measure columns, with all their answers and history. Restoring puts one back where it was.</p>
-  <div class="tbl-wrap"><table><thead><tr><th>Deleted</th><th>Measures</th><th>When</th><th></th></tr></thead><tbody id="archive-rows"></tbody></table></div>
-</dialog>
-
-<div class="toast" id="toast" role="status" aria-live="polite"></div>
 {% endblock %}
-{% block scripts %}<script src="{{ asset('app.js') }}"></script>{% endblock %}
+{% block page_scripts %}<script src="{{ asset('app.js') }}"></script>{% endblock %}

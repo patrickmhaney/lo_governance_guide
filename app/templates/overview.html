@@ -1,0 +1,22 @@
+{% extends "_workspace.html" %}
+{% block page %}
+<section class="ov-steps" id="ov-steps" aria-label="How the pieces fit together"></section>
+
+<div class="ov-grid">
+  <section aria-labelledby="todo-h">
+    <h2 id="todo-h" class="ov-h">Needs attention</h2>
+    <ul class="todo" id="todo"></ul>
+  </section>
+  <section aria-labelledby="handoff-h">
+    <h2 id="handoff-h" class="ov-h">Handoff</h2>
+    <p class="muted small">What goes to the client at the end, in whatever home they use: a wiki, SharePoint, Notion or a repo.</p>
+    <ul class="exports">
+      <li><a href="/w/{{ client.slug }}/handbook.md" target="_blank" rel="noopener">Handbook</a> <span class="muted">Markdown. Everything below in one document.</span></li>
+      <li><a href="/w/{{ client.slug }}/export.md" target="_blank" rel="noopener">Measure catalogue</a> <span class="muted">Markdown</span></li>
+      <li><a href="/w/{{ client.slug }}/export.csv">Measures</a> <span class="muted">CSV</span></li>
+      <li><a href="/w/{{ client.slug }}/bus-matrix.csv">Bus matrix</a> <span class="muted">CSV</span></li>
+    </ul>
+  </section>
+</div>
+{% endblock %}
+{% block page_scripts %}<script src="{{ asset('planning.js') }}"></script><script src="{{ asset('overview.js') }}"></script>{% endblock %}

@@ -7,6 +7,13 @@ login-based access will plug in later.
 
 Each grid cell (dashboard x slot) exists as a requirement row from the moment
 the workspace is created, so the API only ever edits cells, never creates them.
+
+A measure is defined once. Another dashboard can show it: its cell is left
+empty and its ref_id points at the cell where the measure is defined, so every
+dashboard that shows it shows the same definition and the same status.
+
+The planning tables (departments, processes, dimensions, the bus matrix and
+dashboard sketches) are in PLANNING_SCHEMA; their rules live in items.py.
 """
 from __future__ import annotations
 
@@ -53,6 +60,10 @@ CREATE TABLE IF NOT EXISTS dashboards (
     code       TEXT NOT NULL,
     name       TEXT NOT NULL DEFAULT '',
     position   INTEGER NOT NULL,
+    audience   TEXT NOT NULL DEFAULT '',   -- who uses it
+    decisions  TEXT NOT NULL DEFAULT '',   -- what they decide with it
+    cadence    TEXT NOT NULL DEFAULT '',   -- when they look at it
+    access     TEXT NOT NULL DEFAULT '',   -- who must not see it, or what they must not see
     UNIQUE (client_id, code)
 );
 CREATE TABLE IF NOT EXISTS people (
@@ -61,6 +72,7 @@ CREATE TABLE IF NOT EXISTS people (
     name       TEXT NOT NULL,
     role       TEXT NOT NULL DEFAULT '',
     email      TEXT NOT NULL DEFAULT '',
+    department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS requirements (
@@ -96,6 +108,9 @@ CREATE TABLE IF NOT EXISTS requirements (
     updated_at       TEXT,
     updated_by       INTEGER REFERENCES people(id) ON DELETE SET NULL,
     completed_at     TEXT,
+    process_id       INTEGER REFERENCES processes(id) ON DELETE SET NULL,
+    dimension_ids    TEXT NOT NULL DEFAULT '[]',  -- JSON array: the dimensions it breaks down by
+    ref_id           INTEGER REFERENCES requirements(id) ON DELETE SET NULL,  -- shows the measure defined there
     UNIQUE (dashboard_id, slot)
 );
 CREATE TABLE IF NOT EXISTS activity (
@@ -118,6 +133,77 @@ CREATE TABLE IF NOT EXISTS archive (
 );
 """
 
+# Processes and dimensions share one shape: a name, JSON answers to their
+# question set, an owner, and the same workflow columns as a measure.
+_ITEM_COLUMNS = """
+    id             INTEGER PRIMARY KEY,
+    client_id      INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    position       INTEGER NOT NULL,
+    name           TEXT NOT NULL DEFAULT '',
+    answers        TEXT NOT NULL DEFAULT '{}',   -- JSON: {question key: answer}, see items.QUESTIONS
+    unknown        TEXT NOT NULL DEFAULT '{}',   -- JSON: {question key: who might know}
+    owner_id       INTEGER REFERENCES people(id) ON DELETE SET NULL,
+    owner_dept_id  INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+    owner_note     TEXT NOT NULL DEFAULT '',
+    assignee_id    INTEGER REFERENCES people(id) ON DELETE SET NULL,
+    status         TEXT NOT NULL DEFAULT 'not_started',
+    followup       INTEGER NOT NULL DEFAULT 0,
+    followup_note  TEXT NOT NULL DEFAULT '',
+    notes          TEXT NOT NULL DEFAULT '',
+    updated_at     TEXT,
+    updated_by     INTEGER REFERENCES people(id) ON DELETE SET NULL,
+    completed_at   TEXT
+"""
+
+PLANNING_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS departments (
+    id         INTEGER PRIMARY KEY,
+    client_id  INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    UNIQUE (client_id, name)
+);
+CREATE TABLE IF NOT EXISTS processes ({_ITEM_COLUMNS});
+CREATE TABLE IF NOT EXISTS dimensions ({_ITEM_COLUMNS});
+CREATE TABLE IF NOT EXISTS process_steps (
+    id          INTEGER PRIMARY KEY,
+    process_id  INTEGER NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
+    position    INTEGER NOT NULL,
+    name        TEXT NOT NULL DEFAULT '',
+    dept_id     INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+    person_id   INTEGER REFERENCES people(id) ON DELETE SET NULL,
+    system      TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS bus_cells (                -- a row means the box is ticked
+    process_id    INTEGER NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
+    dimension_id  INTEGER NOT NULL REFERENCES dimensions(id) ON DELETE CASCADE,
+    PRIMARY KEY (process_id, dimension_id)
+);
+CREATE TABLE IF NOT EXISTS tiles (                    -- a dashboard sketch, on a 12-column grid
+    id              INTEGER PRIMARY KEY,
+    dashboard_id    INTEGER NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL,
+    x               INTEGER NOT NULL,
+    y               INTEGER NOT NULL,
+    w               INTEGER NOT NULL,
+    h               INTEGER NOT NULL,
+    title           TEXT NOT NULL DEFAULT '',
+    requirement_id  INTEGER REFERENCES requirements(id) ON DELETE SET NULL,
+    dimension_id    INTEGER REFERENCES dimensions(id) ON DELETE SET NULL,
+    note            TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS item_activity (            -- change history for processes and dimensions
+    id         INTEGER PRIMARY KEY,
+    client_id  INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL,
+    item_id    INTEGER NOT NULL,
+    at         TEXT NOT NULL,
+    actor_id   INTEGER REFERENCES people(id) ON DELETE SET NULL,
+    action     TEXT NOT NULL,
+    detail     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS item_activity_by_item ON item_activity (kind, item_id, at);
+"""
+
 # Requirement columns added after the first release. Databases created before
 # then get them on start; see _add_missing_columns.
 ADDED_COLUMNS = {
@@ -129,6 +215,18 @@ ADDED_COLUMNS = {
     "sme_id": "INTEGER REFERENCES people(id) ON DELETE SET NULL",
     "sme_note": "TEXT NOT NULL DEFAULT ''",
     "unknown": "TEXT NOT NULL DEFAULT '{}'",
+    "process_id": "INTEGER REFERENCES processes(id) ON DELETE SET NULL",
+    "dimension_ids": "TEXT NOT NULL DEFAULT '[]'",
+    "ref_id": "INTEGER REFERENCES requirements(id) ON DELETE SET NULL",
+}
+
+# A dashboard's "data use" answers, asked on its sketch page.
+DASHBOARD_USE = ("audience", "decisions", "cadence", "access")
+
+# Columns other tables gained with the planning pages.
+ADDED_TABLE_COLUMNS = {
+    "people": {"department_id": "INTEGER REFERENCES departments(id) ON DELETE SET NULL"},
+    "dashboards": {k: "TEXT NOT NULL DEFAULT ''" for k in DASHBOARD_USE},
 }
 
 # Per-question "not sure" answers from before "I don't know" covered every
@@ -167,10 +265,21 @@ def init_db() -> None:
     _retire_single_client_db()
     with transaction() as conn:
         conn.executescript(SCHEMA)
+        conn.executescript(PLANNING_SCHEMA)
+        for table, columns in ADDED_TABLE_COLUMNS.items():
+            have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for col, ddl in columns.items():
+                if col not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         _add_missing_columns(conn)
-        if not conn.execute("SELECT 1 FROM clients WHERE slug = 'demo'").fetchone():
-            from .demo import seed_demo
+        from .demo import seed_demo, seed_demo_department, seed_demo_planning
+        demo = conn.execute("SELECT id FROM clients WHERE slug = 'demo'").fetchone()
+        if not demo:
             seed_demo(conn)
+        else:
+            # Each does nothing once the sample has that content.
+            seed_demo_planning(conn, demo["id"])
+            seed_demo_department(conn, demo["id"])
 
 
 def _retire_single_client_db() -> None:
@@ -285,13 +394,18 @@ def next_code(conn: sqlite3.Connection, client_id: int) -> str:
 # their answers and history, into one archive row that can be restored.
 # ---------------------------------------------------------------------------
 
-def _cells_payload(conn: sqlite3.Connection, rows) -> list[dict]:
-    out = []
-    for r in rows:
-        d = dict(r)
+def _cells_payload(conn: sqlite3.Connection, rows, dashboard_id: int | None = None) -> list[dict]:
+    """Each cell with its history, and what points at it from outside what's being
+    archived: cells on other dashboards that show it, and sketch tiles (other than
+    dashboard_id's own, which are archived with it)."""
+    out = [dict(r) for r in rows]
+    ids = {d["id"] for d in out}
+    for d in out:
         d["activity"] = [dict(a) for a in conn.execute(
-            "SELECT at, actor_id, action, detail FROM activity WHERE requirement_id = ? ORDER BY id", (r["id"],))]
-        out.append(d)
+            "SELECT at, actor_id, action, detail FROM activity WHERE requirement_id = ? ORDER BY id", (d["id"],))]
+        d["refs"] = [r[0] for r in conn.execute("SELECT id FROM requirements WHERE ref_id = ?", (d["id"],)) if r[0] not in ids]
+        d["tiles"] = [t[0] for t in conn.execute(
+            "SELECT id FROM tiles WHERE requirement_id = ? AND dashboard_id IS NOT ?", (d["id"], dashboard_id))]
     return out
 
 
@@ -304,17 +418,21 @@ def _shift_slots(conn: sqlite3.Connection, client_id: int, from_slot: int, delta
 
 
 def _restore_cell(conn: sqlite3.Connection, client_id: int, dashboard_id: int, slot: int, cell: dict | None,
-                  actor_id: int | None) -> None:
+                  actor_id: int | None) -> int:
     if cell is None:
-        conn.execute("INSERT INTO requirements (dashboard_id, slot) VALUES (?, ?)", (dashboard_id, slot))
-        return
+        return conn.execute("INSERT INTO requirements (dashboard_id, slot) VALUES (?, ?)", (dashboard_id, slot)).lastrowid
     columns = {r["name"] for r in conn.execute("PRAGMA table_info(requirements)")} - {"id"}
     people = {r[0] for r in conn.execute("SELECT id FROM people WHERE client_id = ?", (client_id,))}
     row = {k: v for k, v in fold_legacy(dict(cell)).items() if k in columns}
     for k in ("assignee_id", "owner_id", "sme_id", "updated_by"):
         if row.get(k) not in people:
             row[k] = None  # that person was removed while this was archived
-    row.update(dashboard_id=dashboard_id, slot=slot)
+    # The same for a process or dimension deleted while this was archived.
+    if not conn.execute("SELECT 1 FROM processes WHERE id = ? AND client_id = ?", (row.get("process_id"), client_id)).fetchone():
+        row["process_id"] = None
+    dims = {r[0] for r in conn.execute("SELECT id FROM dimensions WHERE client_id = ?", (client_id,))}
+    row["dimension_ids"] = json.dumps([d for d in json.loads(row.get("dimension_ids") or "[]") if d in dims])
+    row.update(dashboard_id=dashboard_id, slot=slot, ref_id=None)  # set by _restore_refs once every cell is back
     rid = conn.execute(f"INSERT INTO requirements ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})",
                        tuple(row.values())).lastrowid
     for a in cell.get("activity", []):
@@ -323,6 +441,53 @@ def _restore_cell(conn: sqlite3.Connection, client_id: int, dashboard_id: int, s
     if row.get("name") or cell.get("activity"):
         conn.execute("INSERT INTO activity (requirement_id, at, actor_id, action, detail) VALUES (?, ?, ?, 'restored', ?)",
                      (rid, now(), actor_id, "Restored from the archive"))
+    # Cells on other dashboards that showed this measure, and sketch tiles that
+    # did, point at it again if nothing else has taken their place.
+    mine = "SELECT id FROM dashboards WHERE client_id = ?"
+    for ref in cell.get("refs", []):
+        conn.execute(f"UPDATE requirements SET ref_id = ? WHERE id = ? AND ref_id IS NULL AND name = '' AND dashboard_id IN ({mine})",
+                     (rid, ref, client_id))
+    for tid in cell.get("tiles", []):
+        conn.execute(f"UPDATE tiles SET requirement_id = ? WHERE id = ? AND requirement_id IS NULL AND dashboard_id IN ({mine})",
+                     (rid, tid, client_id))
+    return rid
+
+
+def ref_problem(conn: sqlite3.Connection, client_id: int, dashboard_id: int, target_id: int,
+                cell_id: int | None = None) -> str | None:
+    """Why a cell on dashboard_id can't show the measure defined at target_id, or None if it can."""
+    t = conn.execute(
+        """SELECT r.name, r.dashboard_id FROM requirements r JOIN dashboards d ON d.id = r.dashboard_id
+           WHERE r.id = ? AND d.client_id = ? AND r.ref_id IS NULL""", (target_id, client_id)).fetchone()
+    if not t or not t["name"].strip():
+        return "ref_id does not match a defined measure in this workspace"
+    if t["dashboard_id"] == dashboard_id or conn.execute(
+            "SELECT 1 FROM requirements WHERE dashboard_id = ? AND ref_id = ? AND id IS NOT ?",
+            (dashboard_id, target_id, cell_id)).fetchone():
+        return "That measure is already on this dashboard"
+    return None
+
+
+def _restore_refs(conn: sqlite3.Connection, client_id: int, restored: list[tuple[dict, int]]) -> None:
+    """Point restored cells back at the measures they showed. A measure restored
+    in the same go has a new id; one deleted since leaves the cell empty."""
+    new_ids = {cell["id"]: rid for cell, rid in restored if cell and "id" in cell}
+    for cell, rid in restored:
+        if cell and cell.get("ref_id") is not None:
+            target = new_ids.get(cell["ref_id"], cell["ref_id"])
+            dash = conn.execute("SELECT dashboard_id FROM requirements WHERE id = ?", (rid,)).fetchone()[0]
+            if not ref_problem(conn, client_id, dash, target, rid):
+                conn.execute("UPDATE requirements SET ref_id = ? WHERE id = ?", (target, rid))
+
+
+def _drop_stray_tiles(conn: sqlite3.Connection, client_id: int) -> None:
+    """A tile only shows a measure that's on its own dashboard, defined there or shown there."""
+    conn.execute(
+        """UPDATE tiles SET requirement_id = NULL
+           WHERE requirement_id IS NOT NULL AND dashboard_id IN (SELECT id FROM dashboards WHERE client_id = ?)
+             AND NOT EXISTS (SELECT 1 FROM requirements r WHERE r.dashboard_id = tiles.dashboard_id
+                             AND ((r.id = tiles.requirement_id AND r.ref_id IS NULL) OR r.ref_id = tiles.requirement_id))""",
+        (client_id,))
 
 
 def _archive(conn: sqlite3.Connection, client_id: int, kind: str, label: str, payload: dict,
@@ -336,10 +501,18 @@ def _archive(conn: sqlite3.Connection, client_id: int, kind: str, label: str, pa
 def archive_dashboard(conn: sqlite3.Connection, client_id: int, dashboard_id: int, actor_id: int | None) -> int:
     d = conn.execute("SELECT * FROM dashboards WHERE id = ? AND client_id = ?", (dashboard_id, client_id)).fetchone()
     cells = _cells_payload(conn, conn.execute(
-        "SELECT * FROM requirements WHERE dashboard_id = ? ORDER BY slot", (dashboard_id,)))
+        "SELECT * FROM requirements WHERE dashboard_id = ? ORDER BY slot", (dashboard_id,)), dashboard_id)
     label = d["code"] + (f" · {d['name']}" if d["name"] else "")
+    # Sketch tiles go with the row; each remembers its measure by the slot that
+    # defines or shows it.
+    tiles = [dict(t) for t in conn.execute(
+        """SELECT t.kind, t.x, t.y, t.w, t.h, t.title, t.dimension_id, t.note,
+                  (SELECT r.slot FROM requirements r WHERE r.dashboard_id = t.dashboard_id
+                     AND (r.id = t.requirement_id OR r.ref_id = t.requirement_id)) AS slot
+           FROM tiles t WHERE t.dashboard_id = ? ORDER BY t.id""", (dashboard_id,))]
     aid = _archive(conn, client_id, "dashboard", label,
-                   {"code": d["code"], "name": d["name"], "position": d["position"], "cells": cells}, actor_id)
+                   {"code": d["code"], "name": d["name"], "position": d["position"], "cells": cells, "tiles": tiles,
+                    **{k: d[k] for k in DASHBOARD_USE}}, actor_id)
     conn.execute("DELETE FROM dashboards WHERE id = ?", (dashboard_id,))  # cascades to cells and history
     return aid
 
@@ -362,7 +535,10 @@ def restore(conn: sqlite3.Connection, client_id: int, archive_id: int, actor_id:
     payload, note = json.loads(a["payload"]), None
     slots = conn.execute("SELECT slots FROM clients WHERE id = ?", (client_id,)).fetchone()[0]
 
-    if a["kind"] == "dashboard":
+    if a["kind"] in ("process", "dimension"):
+        from .items import restore_item
+        restore_item(conn, client_id, a["kind"], payload, actor_id)
+    elif a["kind"] == "dashboard":
         code = payload["code"]
         if conn.execute("SELECT 1 FROM dashboards WHERE client_id = ? AND code = ?", (client_id, code)).fetchone():
             code = next_code(conn, client_id)
@@ -372,18 +548,33 @@ def restore(conn: sqlite3.Connection, client_id: int, archive_id: int, actor_id:
             add_slot(conn, client_id)
         conn.execute("UPDATE dashboards SET position = position + 1 WHERE client_id = ? AND position >= ?",
                      (client_id, payload["position"]))
-        did = conn.execute("INSERT INTO dashboards (client_id, code, name, position) VALUES (?, ?, ?, ?)",
-                           (client_id, code, payload["name"], payload["position"])).lastrowid
+        use = {k: payload.get(k, "") for k in DASHBOARD_USE}
+        did = conn.execute(
+            f"INSERT INTO dashboards (client_id, code, name, position, {', '.join(use)}) VALUES (?, ?, ?, ?{', ?' * len(use)})",
+            (client_id, code, payload["name"], payload["position"], *use.values())).lastrowid
         by_slot = {c["slot"]: c for c in payload["cells"]}
-        for slot in range(1, needed + 1):
-            _restore_cell(conn, client_id, did, slot, by_slot.get(slot), actor_id)
+        rids = {slot: _restore_cell(conn, client_id, did, slot, by_slot.get(slot), actor_id) for slot in range(1, needed + 1)}
+        _restore_refs(conn, client_id, [(by_slot.get(slot), rid) for slot, rid in rids.items()])
+        # A tile on a cell that shows another dashboard's measure points at that
+        # measure, or at nothing once the measure is gone.
+        shown = {}
+        for slot, rid in rids.items():
+            ref = conn.execute("SELECT ref_id FROM requirements WHERE id = ?", (rid,)).fetchone()[0]
+            shown[slot] = ref or (None if (by_slot.get(slot) or {}).get("ref_id") else rid)
+        dims = {r[0] for r in conn.execute("SELECT id FROM dimensions WHERE client_id = ?", (client_id,))}
+        for t in payload.get("tiles", []):
+            conn.execute(
+                """INSERT INTO tiles (dashboard_id, kind, x, y, w, h, title, requirement_id, dimension_id, note)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (did, t["kind"], t["x"], t["y"], t["w"], t["h"], t["title"], shown.get(t["slot"]),
+                 t["dimension_id"] if t["dimension_id"] in dims else None, t["note"]))
     else:
         slot = min(payload["slot"], slots + 1)
         _shift_slots(conn, client_id, slot, 1)
         conn.execute("UPDATE clients SET slots = slots + 1 WHERE id = ?", (client_id,))
         by_id = {c["dashboard_id"]: c for c in payload["cells"]}
         by_code = {c["dashboard_code"]: c for c in payload["cells"]}
-        lost = set(by_code)
+        lost, restored = set(by_code), []
         for d in conn.execute("SELECT id, code FROM dashboards WHERE client_id = ?", (client_id,)).fetchall():
             # Same dashboard id first (its code may have been edited since), then the same code.
             cell = by_id.get(d["id"])
@@ -393,10 +584,12 @@ def restore(conn: sqlite3.Connection, client_id: int, archive_id: int, actor_id:
                 cell = None  # already put back on another dashboard
             if cell:
                 lost.discard(cell["dashboard_code"])
-            _restore_cell(conn, client_id, d["id"], slot, cell, actor_id)
+            restored.append((cell, _restore_cell(conn, client_id, d["id"], slot, cell, actor_id)))
+        _restore_refs(conn, client_id, restored)
         lost_named = sorted(c for c in lost if by_code[c]["name"])
         if lost_named:
             note = "Measures for dashboards that no longer exist weren't restored: " + ", ".join(lost_named)
+    _drop_stray_tiles(conn, client_id)
     conn.execute("DELETE FROM archive WHERE id = ?", (archive_id,))
     return note
 
@@ -422,6 +615,7 @@ def requirement_dict(row: sqlite3.Row) -> dict:
     for flag in FLAGS:
         d[flag] = bool(d[flag])
     d["unknown"] = json.loads(d.get("unknown") or "{}")
+    d["dimension_ids"] = json.loads(d.get("dimension_ids") or "[]")
     d["answered"] = answered(d)
     return d
 
@@ -438,6 +632,9 @@ def answered(r: dict) -> dict[str, bool]:
     unknown = r.get("unknown") or {}
     if isinstance(unknown, str):
         unknown = json.loads(unknown)
+    dims = r.get("dimension_ids") or []
+    if isinstance(dims, str):
+        dims = json.loads(dims)
     answers = {
         "name": has("name"),
         "definition": has("description"),
@@ -445,7 +642,7 @@ def answered(r: dict) -> dict[str, bool]:
         "sources": bool(r.get("sources")) or has("source_other"),
         "target": has("target") or bool(r.get("target_none")),
         "report": has("report") or bool(r.get("report_none")),
-        "breakdowns": has("breakdowns") or bool(r.get("breakdowns_same")),
+        "breakdowns": has("breakdowns") or bool(r.get("breakdowns_same")) or bool(dims),
         "time": has("time_basis"),
         "refresh": has("refresh"),
         "restatement": has("restatement") or bool(r.get("restatement_none")),

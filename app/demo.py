@@ -5,12 +5,17 @@ engagement goes through: complete, in progress, flagged, unassigned and empty.
 The measure content is adapted from a real proof of concept; the company and
 the people are not real. Delete the row in `clients` with slug 'demo' and
 restart to reseed it.
+
+The planning content (departments, processes, dimensions, the bus matrix and
+one dashboard sketch) is seeded by seed_demo_planning, and a department
+dashboard that shares measures with the process dashboards by
+seed_demo_department. Both also fill in a sample created before they existed.
 """
 from __future__ import annotations
 
 import json
 
-from . import db
+from . import db, items
 
 DASHBOARDS = [
     ("O2C", "Order to Cash"),
@@ -135,3 +140,253 @@ def seed_demo(conn) -> None:
                 row[key] = json.dumps(row[key])
         cols = ", ".join(f"{k} = ?" for k in row)
         conn.execute(f"UPDATE requirements SET {cols} WHERE id = ?", (*row.values(), rid))
+    seed_demo_planning(conn, client_id)
+    seed_demo_department(conn, client_id)
+
+
+# ---------------------------------------------------------------------------
+# Planning content
+# ---------------------------------------------------------------------------
+
+DEPARTMENTS = ["Sales", "Customer Service", "Operations", "Finance", "Procurement"]
+# Each sample person's department, by the role they're named for.
+PEOPLE_DEPARTMENTS = {"Logistics Lead": "Operations", "Finance Controller": "Finance",
+                      "Sales Operations Lead": "Sales", "Purchasing Manager": "Procurement"}
+
+# (name, answers, steps as (name, department, system), owner as ("person"|"dept", name), unknown, status)
+PROCESSES = [
+    ("Order to Cash", {
+        "purpose": "Turns customer orders into cash. Every sale and every receivable starts here.",
+        "boundaries": "Starts when a customer places an order. Ends when their payment is applied to the invoice.",
+        "event": "One line on a customer order, and later one line on its invoice.",
+        "systems": ["CRM", "ERP"],
+        "volume": "About 1,800 order lines a day. Month-end is twice as busy.",
+        "decisions": "Which customers to chase for payment. Whether to extend credit. Which late orders to expedite.",
+        "pain_points": "Order changes are agreed by email, so the ERP is often a day behind.",
+        "priority": "now",
+    }, [("Take the order", "Sales", "CRM"), ("Check credit", "Finance", "ERP"),
+        ("Pick, pack and ship", "Operations", "ERP"), ("Invoice", "Finance", "ERP"),
+        ("Collect payment", "Finance", "ERP")], ("person", "Finance Controller"), {}, "complete"),
+    ("Procure to Pay", {
+        "purpose": "Buys stock and services and pays suppliers on time.",
+        "boundaries": "Starts with a purchase requisition. Ends when the supplier is paid.",
+        "event": "One line on a purchase order.",
+        "systems": ["ERP"],
+        "decisions": "Which suppliers to keep. When to pay to take early-payment discounts.",
+        "pain_points": "Invoices that don't match the order are fixed by hand in AP.",
+        "priority": "next",
+    }, [("Raise purchase order", "Procurement", "ERP"), ("Receive goods", "Operations", "ERP"),
+        ("Match invoice", "Finance", "ERP"), ("Pay supplier", "Finance", "ERP")],
+     ("person", "Purchasing Manager"), {"volume": "Purchasing Manager"}, "in_progress"),
+    ("Inventory to Delivery", {
+        "purpose": "Keeps the right stock in each warehouse and gets orders to customers when promised.",
+        "boundaries": "Starts when stock is planned for a site. Ends when the customer confirms delivery.",
+        "event": "One shipment, and each delivery confirmation from the carrier.",
+        "systems": ["Inventory planning", "ERP", "Freight platform"],
+        "volume": "About 600 shipments a day from three sites.",
+        "decisions": "Which carriers to review. Where to hold safety stock. Which customers need a call about a late order.",
+        "pain_points_none": True,
+        "priority": "now",
+    }, [("Plan stock", "Operations", "Inventory planning"), ("Pick and pack", "Operations", "ERP"),
+        ("Ship", "Operations", "Freight platform"), ("Confirm delivery", "Customer Service", "Freight platform")],
+     ("person", "Logistics Lead"), {}, "complete"),
+    ("Record to Report", {
+        "purpose": "Closes the books each month and produces the financial statements.",
+        "systems": ["ERP"],
+    }, [], ("dept", "Finance"), {}, "in_progress"),
+    ("Hire to Retire", {}, [], None, {}, "not_started"),
+]
+
+# (name, answers, owner, unknown, status)
+DIMENSIONS = [
+    ("Date", {
+        "definition": "The calendar and our fiscal calendar: days, fiscal weeks, months, quarters and years.",
+        "identifier": "The date itself.",
+        "attributes": "Fiscal week, fiscal month, quarter, working day, holiday.",
+        "hierarchy": "Day → fiscal week → fiscal month → quarter → fiscal year.",
+        "systems": ["ERP"],
+        "history": "as_is",
+        "quality_none": True,
+    }, ("dept", "Finance"), {}, "complete"),
+    ("Customer", {
+        "definition": "Any company that has placed an order with us in the last five years.",
+        "identifier": "Customer number in the ERP. The CRM uses its own account ID, matched by hand.",
+        "attributes": "Name, segment, account manager, payment terms, account tier, region.",
+        "hierarchy": "Customer → account tier → region.",
+        "systems": ["ERP"],
+        "history": "as_was",
+        "history_note": "Region and account manager. Name changes can overwrite.",
+        "quality": "Some customers exist twice under slightly different names.",
+    }, ("person", "Sales Operations Lead"), {}, "complete"),
+    ("Product", {
+        "definition": "Anything we sell or stock, down to the individual SKU.",
+        "identifier": "Item number in the ERP.",
+        "attributes": "Description, product family, brand, unit of measure, weight.",
+        "systems": ["ERP"],
+        "history": "as_was",
+    }, ("dept", "Operations"), {"hierarchy": "Purchasing Manager"}, "in_progress"),
+    ("Site", {
+        "definition": "A warehouse or branch that holds stock or ships orders.",
+        "identifier": "Site code, e.g. DAL1.",
+        "hierarchy": "Site → region.",
+        "systems": ["ERP"],
+    }, ("person", "Logistics Lead"), {}, "in_progress"),
+    ("Supplier", {"definition": "A company we buy goods or services from."}, None, {}, "in_progress"),
+    ("Carrier", {
+        "definition": "A freight company that moves our shipments.",
+        "systems": ["Freight platform"],
+    }, ("person", "Logistics Lead"), {}, "in_progress"),
+    ("Employee", {}, None, {}, "not_started"),
+]
+
+BUS = {
+    "Order to Cash": ["Date", "Customer", "Product", "Site"],
+    "Procure to Pay": ["Date", "Product", "Site", "Supplier"],
+    "Inventory to Delivery": ["Date", "Customer", "Product", "Site", "Carrier"],
+    "Record to Report": ["Date"],
+}
+
+# Measure name: (process, dimensions). Cost Per Order and Three-Way Match Rate
+# break down by dimensions their process doesn't tick yet, so the bus matrix
+# shows a suggestion for each.
+MEASURE_LINKS = {
+    "On-Time Delivery": ("Inventory to Delivery", ["Date", "Customer", "Carrier", "Site"]),
+    "Cost Per Shipment": ("Inventory to Delivery", ["Date", "Carrier"]),
+    "Inventory Accuracy": ("Inventory to Delivery", ["Product", "Site"]),
+    "Days Sales Outstanding": ("Order to Cash", ["Date", "Customer"]),
+    "Cost Per Order": ("Order to Cash", ["Customer", "Carrier"]),
+    "Return Rate": ("Order to Cash", []),
+    "Three-Way Match Rate": ("Procure to Pay", ["Supplier", "Employee", "Date"]),
+}
+
+SKETCH_DASHBOARD = "I2D"
+SKETCH_USE = {
+    "audience": "The logistics team and the operations director.",
+    "decisions": "Which carriers to review, and which customers need a call about a late order.",
+    "cadence": "The Monday operations meeting, and daily for late shipments.",
+    "access": "Carrier rates are confidential: customer service shouldn't see the cost tiles.",
+}
+# (kind, x, y, w, h, measure, dimension, title, note)
+SKETCH = [
+    ("filter", 0, 0, 3, 1, None, "Date", "", ""),
+    ("filter", 3, 0, 3, 1, None, "Customer", "", ""),
+    ("filter", 6, 0, 3, 1, None, "Carrier", "", ""),
+    ("kpi", 0, 1, 3, 2, "On-Time Delivery", None, "", ""),
+    ("kpi", 3, 1, 3, 2, "Cost Per Shipment", None, "", ""),
+    ("kpi", 6, 1, 3, 2, "Inventory Accuracy", None, "", ""),
+    ("text", 9, 0, 3, 3, None, None, "Late shipments",
+     "Each late shipment links to its record in the freight platform, so it can be chased from here."),
+    ("line", 0, 3, 6, 3, "On-Time Delivery", None, "On-time delivery by week", ""),
+    ("bar", 6, 3, 6, 3, "On-Time Delivery", "Carrier", "", ""),
+    ("table", 0, 6, 12, 3, "On-Time Delivery", "Customer", "Late shipments by customer", ""),
+]
+
+
+def seed_demo_planning(conn, client_id: int) -> None:
+    if any(conn.execute(f"SELECT 1 FROM {t} WHERE client_id = ?", (client_id,)).fetchone()
+           for t in ("departments", "processes", "dimensions")):
+        return
+    depts = {name: conn.execute("INSERT INTO departments (client_id, name) VALUES (?, ?)", (client_id, name)).lastrowid
+             for name in DEPARTMENTS}
+    people = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM people WHERE client_id = ?", (client_id,))}
+    for person, dept in PEOPLE_DEPARTMENTS.items():
+        conn.execute("UPDATE people SET department_id = ? WHERE id = ?", (depts[dept], people.get(person)))
+
+    def owner_cols(owner):
+        if owner is None:
+            return {}
+        kind, name = owner
+        return {"owner_id": people.get(name)} if kind == "person" else {"owner_dept_id": depts[name]}
+
+    def seed_item(kind, name, answers, owner, unknown, status, assignee=None):
+        iid = items.create_item(conn, client_id, kind, name, answers)
+        row = {**owner_cols(owner), "unknown": json.dumps(unknown), "status": status,
+               "followup": int(bool(unknown)), "updated_at": db.now(), "assignee_id": assignee,
+               "completed_at": db.now() if status == "complete" else None}
+        conn.execute(f"UPDATE {items.KINDS[kind]} SET {', '.join(f'{k} = ?' for k in row)} WHERE id = ?",
+                     (*row.values(), iid))
+        return iid
+
+    procs = {}
+    for name, answers, steps, owner, unknown, status in PROCESSES:
+        owner_person = people.get(owner[1]) if owner and owner[0] == "person" else None
+        procs[name] = pid = seed_item("process", name, answers, owner, unknown, status, owner_person)
+        for pos, (step, dept, system) in enumerate(steps):
+            conn.execute("INSERT INTO process_steps (process_id, position, name, dept_id, system) VALUES (?, ?, ?, ?, ?)",
+                         (pid, pos, step, depts[dept], system))
+    dims = {name: seed_item("dimension", name, answers, owner, unknown, status)
+            for name, answers, owner, unknown, status in DIMENSIONS}
+    for proc, names in BUS.items():
+        for d in names:
+            conn.execute("INSERT INTO bus_cells (process_id, dimension_id) VALUES (?, ?)", (procs[proc], dims[d]))
+
+    measures = {r["name"]: r["id"] for r in conn.execute(
+        """SELECT r.id, r.name FROM requirements r JOIN dashboards d ON d.id = r.dashboard_id
+           WHERE d.client_id = ? AND r.name <> ''""", (client_id,))}
+    for measure, (proc, dim_names) in MEASURE_LINKS.items():
+        if measure in measures:
+            conn.execute("UPDATE requirements SET process_id = ?, dimension_ids = ? WHERE id = ?",
+                         (procs[proc], json.dumps([dims[d] for d in dim_names]), measures[measure]))
+
+    dash = conn.execute("SELECT id FROM dashboards WHERE client_id = ? AND code = ?", (client_id, SKETCH_DASHBOARD)).fetchone()
+    if dash:
+        conn.execute(f"UPDATE dashboards SET {', '.join(f'{k} = ?' for k in SKETCH_USE)} WHERE id = ?",
+                     (*SKETCH_USE.values(), dash["id"]))
+        for kind, x, y, w, h, measure, dim, title, note in SKETCH:
+            conn.execute(
+                """INSERT INTO tiles (dashboard_id, kind, x, y, w, h, title, requirement_id, dimension_id, note)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (dash["id"], kind, x, y, w, h, title, measures.get(measure), dims.get(dim), note))
+
+
+# ---------------------------------------------------------------------------
+# A department dashboard
+# ---------------------------------------------------------------------------
+
+# Operations reads three processes. Two of its measures are defined on the
+# process dashboards and shown here; Supplier On-Time Rate is its own.
+DEPARTMENT = ("OPS", "Operations")
+DEPARTMENT_SHOWS = ["On-Time Delivery", "Cost Per Order"]
+DEPARTMENT_MEASURE = {
+    "name": "Supplier On-Time Rate",
+    "description": "The share of purchase order lines that arrive by the date the supplier promised.",
+    "sources": ["ERP"],
+    "formula": "PO lines received on or before the promised date, divided by all PO lines received.",
+    "breakdowns": "By supplier, site and month.",
+}
+DEPARTMENT_LINK = ("Procure to Pay", ["Supplier", "Site", "Date"])
+DEPARTMENT_USE = {
+    "audience": "The operations director and the site managers.",
+    "decisions": "Where to add staff or stock. Which carriers and suppliers to review.",
+    "cadence": "The monthly operations review.",
+}
+
+
+def seed_demo_department(conn, client_id: int) -> None:
+    code, name = DEPARTMENT
+    mine = "SELECT r.* FROM requirements r JOIN dashboards d ON d.id = r.dashboard_id WHERE d.client_id = ?"
+    if (conn.execute("SELECT 1 FROM dashboards WHERE client_id = ? AND code = ?", (client_id, code)).fetchone()
+            or conn.execute("SELECT 1 FROM archive WHERE client_id = ? AND kind = 'dashboard' AND label LIKE ?",
+                            (client_id, code + "%")).fetchone()
+            or conn.execute(f"{mine} AND r.ref_id IS NOT NULL", (client_id,)).fetchone()):
+        return
+    measures = {r["name"]: r["id"] for r in conn.execute(f"{mine} AND r.name <> '' AND r.ref_id IS NULL", (client_id,))}
+    slots = conn.execute("SELECT slots FROM clients WHERE id = ?", (client_id,)).fetchone()[0]
+    did = db.add_dashboard(conn, client_id, code, name, slots)
+    conn.execute(f"UPDATE dashboards SET {', '.join(f'{k} = ?' for k in DEPARTMENT_USE)} WHERE id = ?",
+                 (*DEPARTMENT_USE.values(), did))
+    cells = iter(r[0] for r in conn.execute("SELECT id FROM requirements WHERE dashboard_id = ? ORDER BY slot", (did,)))
+    for shown in DEPARTMENT_SHOWS:
+        if shown in measures:
+            conn.execute("UPDATE requirements SET ref_id = ? WHERE id = ?", (measures[shown], next(cells)))
+    rid = next(cells, None)
+    if rid is None:
+        return
+    proc, dim_names = DEPARTMENT_LINK
+    pid = conn.execute("SELECT id FROM processes WHERE client_id = ? AND name = ?", (client_id, proc)).fetchone()
+    dims = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM dimensions WHERE client_id = ?", (client_id,))}
+    lead = conn.execute("SELECT id FROM people WHERE client_id = ? AND name = 'Logistics Lead'", (client_id,)).fetchone()
+    row = {**DEPARTMENT_MEASURE, "sources": json.dumps(DEPARTMENT_MEASURE["sources"]), "status": "in_progress",
+           "updated_at": db.now(), "assignee_id": lead[0] if lead else None, "process_id": pid[0] if pid else None,
+           "dimension_ids": json.dumps([dims[d] for d in dim_names if d in dims])}
+    conn.execute(f"UPDATE requirements SET {', '.join(f'{k} = ?' for k in row)} WHERE id = ?", (*row.values(), rid))

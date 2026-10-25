@@ -1,11 +1,10 @@
-/* Governance Guide styles: monochrome, Sora at light weight for display type,
+/* Requirements to Governance styles: monochrome, Sora at light weight for display type,
    IBM Plex for reading and data. Semantic status colours are the only hues.
    Layout: a single 1180px column. */
 :root {
   --bg: #FFFFFF; --surface: #FFFFFF; --sunken: #F3F3F2; --ink: #111111; --ink-2: #474747; --ink-3: #767676;
   --line: #E3E3E1; --line-2: #CDCDCA;
   --accent: #111111; --accent-ink: #FFFFFF; --accent-soft: #ECECEA;
-  --logo-cut: var(--bg);
   --flag: #C25E4D; --flag-soft: #F8E5E1;
   --ok: #2C7A4D; --ok-soft: #DFF1E6; --warn: #9C6311; --warn-soft: #FAEFD9; --idle-soft: #EDEDEB; --bad: #B23A3A;
   --f-brand: "Sora", "Avenir Next", "Segoe UI", system-ui, sans-serif;
@@ -38,9 +37,8 @@ a { color: inherit; }
 .nowrap { white-space: nowrap; }
 .wrap { max-width: 1180px; margin: 0 auto; padding-inline: 24px; }
 
-/* header mark */
-.logo-small { display: inline-flex; align-items: center; gap: 8px; font-family: var(--f-brand); font-weight: 300; font-size: 17px; text-decoration: none; color: var(--ink); }
-.mark { display: inline-block; color: var(--ink); }
+/* header */
+.site-name { font-family: var(--f-brand); font-weight: 300; font-size: 17px; text-decoration: none; color: var(--ink); }
 
 /* site header & footer */
 .site-h { border-bottom: 1px solid var(--line); background: var(--bg); }
