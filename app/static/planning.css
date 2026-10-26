@@ -243,3 +243,15 @@
   .step-row .select { grid-column: 2 / -1; }
   .guide { padding-right: 18px; padding-top: 34px; }
 }
+
+/* overview: build preview */
+.ov-preview { padding: 16px 20px; margin-bottom: 22px; }
+.ov-preview-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.ov-preview-head p { margin: 4px 0 0; max-width: 72ch; }
+.preview-tag { margin-left: 8px; vertical-align: middle; border-style: dashed; }
+.preview-kpis { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 14px; }
+.preview-kpis th, .preview-kpis td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.preview-kpis th { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
+.preview-kpis td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.preview-log { max-height: 260px; overflow: auto; background: var(--sunken); border-radius: var(--r); padding: 10px 12px; font-size: 12px; white-space: pre-wrap; }
+.bad { color: var(--bad); }

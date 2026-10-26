@@ -17,6 +17,7 @@ def client_for(conn, slug: str) -> dict:
     c = dict(row)
     c["sources"] = json.loads(c["sources"])
     c["is_demo"] = bool(c["is_demo"])
+    c.setdefault("target_slug", "")
     return c
 
 

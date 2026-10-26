@@ -141,6 +141,11 @@ def planning_state(slug: str):
                    WHERE d.client_id = ? AND (r.name <> '' OR r.ref_id IS NOT NULL) ORDER BY d.position, r.slot""", (cid,))],
             "tiles": [dict(r) for r in conn.execute(
                 "SELECT t.* FROM tiles t JOIN dashboards d ON d.id = t.dashboard_id WHERE d.client_id = ? ORDER BY t.id", (cid,))],
+            # Which departments own or contribute to each measure, per process (contract C8).
+            "influence": [dict(r) for r in conn.execute(
+                """SELECT m.requirement_id AS measure_id, m.department_id, m.process_id, m.influence
+                   FROM measure_departments m JOIN departments d ON d.id = m.department_id
+                   WHERE d.client_id = ? ORDER BY m.position, m.id""", (cid,))],
         }
 
 

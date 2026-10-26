@@ -53,3 +53,42 @@ function renderOverview() {
 
 page.render = renderOverview;
 start();
+
+/* Build preview: compile, rebuild what changed, show the numbers - labelled, never on the measures. */
+const fmtKpi = (v, f) => v == null ? "–" : f === "percent" ? (v * 100).toFixed(1) + "%"
+  : f === "currency_usd" ? "$" + v.toLocaleString("en-US", { maximumFractionDigits: 0 })
+  : f === "days" ? v.toFixed(1) + " days" : v.toLocaleString("en-US", { maximumFractionDigits: 2 });
+
+function renderPreview(p) {
+  const box = $("#preview");
+  box.hidden = !p.bound;
+  if (!p.bound) return;
+  $("#preview-pack").textContent = p.pack;
+  const job = p.job, btn = $("#preview-btn");
+  btn.disabled = job?.status === "running";
+  btn.textContent = job?.status === "running" ? "Building…" : "Build preview";
+  const when = job?.finished_at ? new Date(job.finished_at).toLocaleString() : "";
+  $("#preview-status").replaceChildren(!job ? h("span", { class: "muted", text: "No preview built in this session yet." })
+    : job.status === "running" ? h("span", { text: `Building: ${job.step}…` })
+    : job.status === "failed" ? h("span", { class: "bad", text: `The preview failed: ${job.error}` })
+    : h("span", {}, `Built ${when} from ${job.changed.length ? plural(job.changed.length, "changed file") : "unchanged requirements"}. `,
+        h("a", { href: job.studio_url, target: "_blank", rel: "noopener", text: "Open the dashboards in the Studio" })));
+  $("#preview-kpis").replaceChildren(job?.status === "done" && job.kpis.length ? h("table", { class: "preview-kpis" },
+    h("thead", {}, h("tr", {}, ["Measure", "Status", "Month", "Preview value", "Month before"].map(t => h("th", { text: t })))),
+    h("tbody", {}, job.kpis.map(k => h("tr", {}, h("td", { text: k.label }), h("td", {}, h("span", { class: "tag", text: k.status || "" })),
+      h("td", { text: k.month ? new Date(k.month + "T00:00:00").toLocaleDateString("en-US", { month: "short", year: "numeric" }) : "–" }),
+      h("td", { class: "num", text: fmtKpi(k.value, k.format) }), h("td", { class: "num muted", text: fmtKpi(k.previous, k.format) }))))) : "");
+  $("#preview-log-wrap").hidden = !job;
+  if (job) $("#preview-log").textContent = job.log.join("\n");
+  if (job?.status === "running") setTimeout(loadPreview, 1500);
+}
+
+async function loadPreview() {
+  try { renderPreview(await api("GET", `${API}/preview`)); } catch { /* no target configured */ }
+}
+
+$("#preview-btn").addEventListener("click", async () => {
+  try { await api("POST", `${API}/preview`); } catch (e) { toast(e.message, true); }
+  loadPreview();
+});
+loadPreview();

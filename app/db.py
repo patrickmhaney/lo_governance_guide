@@ -14,6 +14,11 @@ dashboard that shows it shows the same definition and the same status.
 
 The planning tables (departments, processes, dimensions, the bus matrix and
 dashboard sketches) are in PLANNING_SCHEMA; their rules live in items.py.
+
+Target bindings link the business content to the target platform (contract C8,
+see spec.py): a measure's stable metric name and its engineer-set binding
+(format, direction, backlog), process, dimension and department codes, which
+departments own or contribute to a measure, and the cubes (saved queries).
 """
 from __future__ import annotations
 
@@ -202,6 +207,24 @@ CREATE TABLE IF NOT EXISTS item_activity (            -- change history for proc
     detail     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS item_activity_by_item ON item_activity (kind, item_id, at);
+CREATE TABLE IF NOT EXISTS measure_departments (     -- which departments own or contribute to a measure
+    id              INTEGER PRIMARY KEY,
+    requirement_id  INTEGER NOT NULL REFERENCES requirements(id) ON DELETE CASCADE,
+    department_id   INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+    process_id      INTEGER REFERENCES processes(id) ON DELETE SET NULL,
+    influence       TEXT NOT NULL CHECK (influence IN ('owns', 'contributes')),
+    position        INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS cubes (                    -- target binding: a saved query, a fixed set of measures at a fixed grain
+    id           INTEGER PRIMARY KEY,
+    client_id    INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    position     INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    description  TEXT NOT NULL DEFAULT '',
+    measures     TEXT NOT NULL DEFAULT '[]',          -- JSON: metric names
+    group_by     TEXT NOT NULL DEFAULT '[]',          -- JSON: MetricFlow group-by references
+    UNIQUE (client_id, name)
+);
 """
 
 # Requirement columns added after the first release. Databases created before
@@ -227,6 +250,13 @@ DASHBOARD_USE = ("audience", "decisions", "cadence", "access")
 ADDED_TABLE_COLUMNS = {
     "people": {"department_id": "INTEGER REFERENCES departments(id) ON DELETE SET NULL"},
     "dashboards": {k: "TEXT NOT NULL DEFAULT ''" for k in DASHBOARD_USE},
+    # Target bindings (contract C8). None of them is a question, so adding them
+    # never reopens a completed measure.
+    "clients": {"target_slug": "TEXT NOT NULL DEFAULT ''"},
+    "requirements": {"metric_name": "TEXT NOT NULL DEFAULT ''", "binding": "TEXT NOT NULL DEFAULT '{}'"},
+    "processes": {"code": "TEXT NOT NULL DEFAULT ''", "active": "INTEGER NOT NULL DEFAULT 1"},
+    "dimensions": {"code": "TEXT NOT NULL DEFAULT ''"},
+    "departments": {"code": "TEXT NOT NULL DEFAULT ''", "position": "INTEGER"},
 }
 
 # Per-question "not sure" answers from before "I don't know" covered every
@@ -272,7 +302,7 @@ def init_db() -> None:
                 if col not in have:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         _add_missing_columns(conn)
-        from .demo import seed_demo, seed_demo_department, seed_demo_planning
+        from .demo import seed_demo, seed_demo_bindings, seed_demo_department, seed_demo_planning
         demo = conn.execute("SELECT id FROM clients WHERE slug = 'demo'").fetchone()
         if not demo:
             seed_demo(conn)
@@ -280,6 +310,7 @@ def init_db() -> None:
             # Each does nothing once the sample has that content.
             seed_demo_planning(conn, demo["id"])
             seed_demo_department(conn, demo["id"])
+            seed_demo_bindings(conn, demo["id"])
 
 
 def _retire_single_client_db() -> None:
@@ -616,6 +647,7 @@ def requirement_dict(row: sqlite3.Row) -> dict:
         d[flag] = bool(d[flag])
     d["unknown"] = json.loads(d.get("unknown") or "{}")
     d["dimension_ids"] = json.loads(d.get("dimension_ids") or "[]")
+    d["binding"] = json.loads(d.get("binding") or "{}")
     d["answered"] = answered(d)
     return d
 

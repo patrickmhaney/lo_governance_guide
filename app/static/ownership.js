@@ -45,6 +45,16 @@ function renderOwnership() {
   }).filter(Boolean));
   if (!S.departments.length) $("#by-dept").prepend(h("tr", {}, h("td", { colspan: "5", class: "muted", text: "Add departments below, then give people a department under People." })));
 
+  // Measures each department owns or contributes to (from the target, or set by the engineers)
+  $("#influence-section").hidden = !S.influence.length;
+  const procName = id => { const p = S.processes.find(x => x.id === id); return p ? (p.code || itemName("process", p)) : ""; };
+  const inf = (dept, kind) => S.influence.filter(r => r.department_id === dept && r.influence === kind)
+    .map(r => [S.measures.find(m => m.id === r.measure_id), procName(r.process_id)]).filter(([m]) => m)
+    .map(([m, p]) => h("span", {}, measureLink(m), p ? h("span", { class: "muted small", text: ` (${p})` }) : null));
+  $("#influence").replaceChildren(...S.departments.filter(d => S.influence.some(r => r.department_id === d.id))
+    .map(d => h("tr", {}, h("td", {}, h("b", { text: d.name })), h("td", {}, joined(inf(d.id, "owns"))),
+      h("td", {}, joined(inf(d.id, "contributes"))))));
+
   // Process x department
   const used = S.departments.filter(d => S.processes.some(p => ownerDept(p) === d.id || (p.steps || []).some(s => deptOf(s.dept_id, s.person_id) === d.id)));
   $("#matrix").replaceChildren(

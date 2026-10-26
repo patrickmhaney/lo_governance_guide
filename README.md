@@ -157,6 +157,44 @@ report and any open question.
   cells that showed it; restoring it, or the row that showed it, puts them back.
   A sketch tile can show a measure that's on its dashboard either way.
 
+## From requirements to the target platform
+
+A workspace can build a working instance of the target platform
+(`bgr_control_tower`, one *pack* per project under `projects/<slug>/`). The
+product knows one thing about the target: contract C8, the **requirements
+spec**, checked against `semantic/requirements_spec.schema.json` in the target
+repo (`docs/requirements_contract.md` there has the field-by-field mapping).
+Set `TARGET_REPO` to the target checkout (default: `../bgr_control_tower_v3`).
+
+| What | How |
+|---|---|
+| The spec | `GET /w/{slug}/requirements_spec.json` (422 if it fails the schema) |
+| Compile it into a pack's "what" files | `python -m app.compiler --workspace <slug> --pack $TARGET_REPO/projects/<pack> [--check]` |
+| Build a workspace from a pack (the reverse) | `python -m app.target_import --target $TARGET_REPO --rev <commit> --slug <slug> --name "<name>" --pack <pack>` |
+| Preview it with numbers | **Build preview** on the Overview tab (see below) |
+
+The compiler writes only what requirements own - a KPI's label, description
+and governance meta, the backlog, the cubes, the process and department seeds
+and `project.yml`'s name and systems - and leaves an unchanged entry byte for
+byte, so an edit lands as a small reviewable diff. A measure with no MetricFlow
+definition yet compiles to a `placeholder` in `backlog.yml`. Target bindings
+(a measure's metric name, format, direction and backlog reason; process,
+dimension and department codes; the cubes; which departments own or
+contribute to a measure) are engineer-set and stored beside the answers.
+
+**Build preview** (Overview tab, workspaces bound to a pack) compiles the
+workspace into the pack in the target checkout's working tree, then runs the
+target's `python -m ctl --project <pack> preview` (rebuild what changed) and
+`ctl kpis`, and shows each KPI's latest month in a panel labelled as synthetic
+data - never on the measure grid. It takes about a minute; one build runs at a
+time per pack. "Open the dashboards in the Studio" opens the target's Studio
+(`STUDIO_URL`, default `http://localhost:8801`) on that pack.
+
+**Sample Project** (`/w/demo`) is bound to the target's `sample` pack
+(`demo.seed_demo_bindings`). **Sample Project v2** (`/w/sample-v2`) is the target as it was at `269ad97`,
+imported with `app.target_import`. Compiling it reproduces the target pack
+exactly (`tests/test_target_round_trip.py`).
+
 ## Layout
 
 ```
@@ -168,11 +206,15 @@ app/
   exports.py         CSVs, the measure catalogue and the handbook
   db.py              SQLite schema and migrations, measure cells, the measure archive
   demo.py            the sample workspace, planning content included
+  spec.py            the requirements spec (contract C8) and its schema check
+  compiler.py        spec -> a target pack's "what" files
+  target_import.py   a target pack (at a pinned commit) -> a workspace
+  preview.py         Build preview: compile, rebuild in the target, the preview numbers
   templates/         base, index, _workspace (tabs and shared dialogs), one per tab
   static/            site.css (shared), styles.css (grid and drawer), planning.css (tabs and planning pages)
                      common.js (every tab), app.js (measures), planning.js (planning state and the
                      process/dimension drawer), overview.js, processes.js, bus.js, prototypes.js, ownership.js
-tests/test_api.py, tests/test_planning.py
+tests/test_api.py, tests/test_planning.py, tests/test_target_round_trip.py, tests/test_preview.py
 ```
 
 ## Before hosting it

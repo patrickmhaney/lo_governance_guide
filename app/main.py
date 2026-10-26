@@ -35,7 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
 
-from . import db, exports, items, planning
+from . import db, exports, items, planning, preview, spec
 from .scope import (actor_id as _actor, check_department, check_person, client_for as _client,
                     person_name as _person_name, shared)
 
@@ -603,5 +603,19 @@ def export_bus(slug: str):
     return _export(slug, exports.bus_csv, "text/csv", "bus-matrix.csv")
 
 
+@app.get("/w/{slug}/requirements_spec.json")
+def export_spec(slug: str):
+    """The requirements spec (contract C8): what the target platform compiles. 422 if it fails the schema."""
+    with db.transaction() as conn:
+        s = spec.build_spec(conn, _client(conn, slug)["id"])
+    problems = spec.validate(s)
+    if problems and spec.target_repo() is not None:
+        raise HTTPException(422, {"problems": problems[:50]})
+    return Response(json.dumps(s, indent=2), media_type="application/json",
+                    headers={"Content-Disposition": f'inline; filename="{slug}-requirements_spec.json"'})
+
+
+# Before planning: its /api/w/{slug}/{kind} would read "preview" as a kind.
+app.include_router(preview.router)
 app.include_router(planning.router)
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")

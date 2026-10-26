@@ -10,6 +10,11 @@ The planning content (departments, processes, dimensions, the bus matrix and
 one dashboard sketch) is seeded by seed_demo_planning, and a department
 dashboard that shares measures with the process dashboards by
 seed_demo_department. Both also fill in a sample created before they existed.
+
+seed_demo_bindings adds the target bindings (contract C8) that compile the
+sample onto the target platform as the `sample` pack: metric names, formats
+and backlog reasons, codes, cubes and who owns what. They are what an
+engineer sets; none of the business answers change.
 """
 from __future__ import annotations
 
@@ -142,6 +147,7 @@ def seed_demo(conn) -> None:
         conn.execute(f"UPDATE requirements SET {cols} WHERE id = ?", (*row.values(), rid))
     seed_demo_planning(conn, client_id)
     seed_demo_department(conn, client_id)
+    seed_demo_bindings(conn, client_id)
 
 
 # ---------------------------------------------------------------------------
@@ -390,3 +396,97 @@ def seed_demo_department(conn, client_id: int) -> None:
            "updated_at": db.now(), "assignee_id": lead[0] if lead else None, "process_id": pid[0] if pid else None,
            "dimension_ids": json.dumps([dims[d] for d in dim_names if d in dims])}
     conn.execute(f"UPDATE requirements SET {', '.join(f'{k} = ?' for k in row)} WHERE id = ?", (*row.values(), rid))
+
+
+# ---------------------------------------------------------------------------
+# Target bindings: the sample as the target's `sample` pack
+# ---------------------------------------------------------------------------
+
+PACK = "sample"
+DEPARTMENT_CODES = {"Sales": "SALES", "Customer Service": "CUSTSVC", "Operations": "OPS",
+                    "Procurement": "PURCH", "Finance": "FIN"}
+# System users and anyone the target can't place land here (the gold employee dimension needs it).
+UNASSIGNED = ("Unassigned", "UNASSIGNED", 99)
+PROCESS_CODES = {"Order to Cash": "O2C", "Procure to Pay": "P2P", "Inventory to Delivery": "I2D",
+                 "Record to Report": "R2R", "Hire to Retire": "H2R"}
+DIMENSION_CODES = {"Date": "date", "Customer": "customer", "Product": "item", "Site": "site",
+                   "Supplier": "supplier", "Carrier": "carrier", "Employee": "employee"}
+# Measure name: (metric name, binding).
+MEASURE_BINDINGS = {
+    "On-Time Delivery": ("on_time_delivery_rate", {"format": "percent", "direction": "higher_is_better"}),
+    "Cost Per Shipment": ("cost_per_shipment", {"format": "currency_usd", "direction": "lower_is_better"}),
+    "Inventory Accuracy": ("inventory_accuracy", {"format": "percent", "direction": "higher_is_better"}),
+    "Days Sales Outstanding": ("days_sales_outstanding", {"format": "days", "direction": "lower_is_better", "backlog": {
+        "status": "placeholder",
+        "reason": "The agreed formula needs month-end receivable balances, which the warehouse doesn't hold yet.",
+        "unblock_requires": ["A month-end accounts receivable snapshot in gold."]}}),
+    "Cost Per Order": ("cost_per_order", {"format": "currency_usd", "direction": "lower_is_better", "backlog": {
+        "status": "placeholder",
+        "reason": "Which costs count is open: freight only, or warehouse labour too."}}),
+    "Return Rate": ("return_rate", {"format": "percent", "direction": "lower_is_better"}),
+    "Three-Way Match Rate": ("three_way_match_rate", {"format": "percent", "direction": "higher_is_better"}),
+    "Supplier On-Time Rate": ("supplier_on_time_rate", {"format": "percent", "direction": "higher_is_better", "backlog": {
+        "status": "placeholder",
+        "reason": "Needs each receipt's promised date; the ERP keeps only a purchase order line's last receipt date.",
+        "unblock_requires": ["The promised date on each purchase order line receipt."]}}),
+}
+# (department, process, measure, influence)
+MEASURE_DEPARTMENTS = [
+    ("OPS", "I2D", "On-Time Delivery", "owns"),
+    ("OPS", "I2D", "Cost Per Shipment", "owns"),
+    ("OPS", "I2D", "Inventory Accuracy", "owns"),
+    ("CUSTSVC", "O2C", "Return Rate", "owns"),
+    ("SALES", "O2C", "Return Rate", "contributes"),
+    ("FIN", "O2C", "Days Sales Outstanding", "owns"),
+    ("OPS", "O2C", "Cost Per Order", "contributes"),
+    ("PURCH", "P2P", "Three-Way Match Rate", "owns"),
+    ("FIN", "P2P", "Three-Way Match Rate", "contributes"),
+    ("OPS", "P2P", "Supplier On-Time Rate", "owns"),
+]
+MONTH = "TimeDimension('metric_time', 'month')"
+CUBES = [
+    ("mart_company_monthly", "Every Sample Project KPI company-wide by month - headline cards and trend lines.",
+     ["on_time_delivery_rate", "cost_per_shipment", "inventory_accuracy", "return_rate", "three_way_match_rate"],
+     [MONTH]),
+    ("mart_o2c", "O2C process cube by site and month.", ["return_rate"], [MONTH, "Dimension('site__site_name')"]),
+    ("mart_p2p", "P2P process cube by site, supplier and month.", ["three_way_match_rate"],
+     [MONTH, "Dimension('site__site_name')", "Dimension('supplier__supplier_name')"]),
+    ("mart_i2d", "I2D process cube by site and month.", ["on_time_delivery_rate", "cost_per_shipment",
+                                                        "inventory_accuracy"], [MONTH, "Dimension('site__site_name')"]),
+    ("mart_carrier_scorecard", "Carriers by month: on-time delivery and cost per shipment.",
+     ["on_time_delivery_rate", "cost_per_shipment"], [MONTH, "Dimension('carrier__carrier_name')"]),
+]
+
+
+def seed_demo_bindings(conn, client_id: int) -> None:
+    if conn.execute("SELECT target_slug FROM clients WHERE id = ?", (client_id,)).fetchone()[0]:
+        return
+    conn.execute("UPDATE clients SET target_slug = ? WHERE id = ?", (PACK, client_id))
+    for pos, (name, code) in enumerate(DEPARTMENT_CODES.items(), 1):
+        conn.execute("UPDATE departments SET code = ?, position = ? WHERE client_id = ? AND name = ?",
+                     (code, pos, client_id, name))
+    name, code, pos = UNASSIGNED
+    if not conn.execute("SELECT 1 FROM departments WHERE client_id = ? AND name = ?", (client_id, name)).fetchone():
+        conn.execute("INSERT INTO departments (client_id, name, code, position) VALUES (?, ?, ?, ?)",
+                     (client_id, name, code, pos))
+    for name, code in PROCESS_CODES.items():
+        conn.execute("UPDATE processes SET code = ? WHERE client_id = ? AND name = ?", (code, client_id, name))
+    for name, code in DIMENSION_CODES.items():
+        conn.execute("UPDATE dimensions SET code = ? WHERE client_id = ? AND name = ?", (code, client_id, name))
+    mine = """SELECT r.id, r.name FROM requirements r JOIN dashboards d ON d.id = r.dashboard_id
+              WHERE d.client_id = ? AND r.name <> '' AND r.ref_id IS NULL"""
+    measures = {r["name"]: r["id"] for r in conn.execute(mine, (client_id,))}
+    for name, (metric, binding) in MEASURE_BINDINGS.items():
+        if name in measures:
+            conn.execute("UPDATE requirements SET metric_name = ?, binding = ? WHERE id = ?",
+                         (metric, json.dumps(binding), measures[name]))
+    depts = {r["code"]: r["id"] for r in conn.execute("SELECT id, code FROM departments WHERE client_id = ?", (client_id,))}
+    procs = {r["code"]: r["id"] for r in conn.execute("SELECT id, code FROM processes WHERE client_id = ?", (client_id,))}
+    for pos, (dept, proc, measure, influence) in enumerate(MEASURE_DEPARTMENTS):
+        if measure in measures and dept in depts:
+            conn.execute("INSERT INTO measure_departments (requirement_id, department_id, process_id, influence, position) "
+                         "VALUES (?, ?, ?, ?, ?)", (measures[measure], depts[dept], procs.get(proc), influence, pos))
+    for pos, (name, description, metrics, group_by) in enumerate(CUBES):
+        conn.execute("INSERT OR IGNORE INTO cubes (client_id, position, name, description, measures, group_by) "
+                     "VALUES (?, ?, ?, ?, ?, ?)", (client_id, pos, name, description, json.dumps(metrics),
+                                                   json.dumps(group_by)))

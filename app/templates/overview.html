@@ -2,6 +2,19 @@
 {% block page %}
 <section class="ov-steps" id="ov-steps" aria-label="How the pieces fit together"></section>
 
+<section class="ov-preview card" id="preview" hidden aria-labelledby="preview-h">
+  <div class="ov-preview-head">
+    <div>
+      <h2 id="preview-h" class="ov-h">Preview <span class="tag preview-tag">Synthetic data · not for decisions</span></h2>
+      <p class="muted small">Compiles these requirements into the target platform's <code id="preview-pack"></code> pack and rebuilds what changed, about a minute. Numbers show only here and in the Studio, never on the measures.</p>
+    </div>
+    <button class="btn primary" id="preview-btn" type="button">Build preview</button>
+  </div>
+  <p class="small" id="preview-status"></p>
+  <div id="preview-kpis"></div>
+  <details id="preview-log-wrap" hidden><summary class="small">What it did</summary><pre class="preview-log" id="preview-log"></pre></details>
+</section>
+
 <div class="ov-grid">
   <section aria-labelledby="todo-h">
     <h2 id="todo-h" class="ov-h">Needs attention</h2>

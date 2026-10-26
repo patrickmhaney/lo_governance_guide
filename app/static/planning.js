@@ -79,6 +79,7 @@ async function loadPlanning() {
   S.dimensions = st.dimensions.map(merge("dimension"));
   S.bus = new Set(st.bus.map(([p, d]) => busKey(p, d)));
   S.dashboards = st.dashboards; S.measures = st.measures; S.placements = st.placements; S.tiles = st.tiles;
+  S.influence = st.influence || [];
   if (S.open && !itemOf(S.open.kind, S.open.id)) { pendingI.delete(S.open.kind + ":" + S.open.id); closeItem(); }
   renderAll();
   if (S.open) syncItem();
